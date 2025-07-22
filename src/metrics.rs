@@ -1,8 +1,7 @@
-use prometheus::{
-    Opts, Registry, CounterVec, GaugeVec, Encoder, TextEncoder,
-};
+use prometheus::{Opts, Registry, CounterVec, GaugeVec, Encoder, TextEncoder};
 use std::sync::OnceLock;
-use reqwest::blocking::Client;
+use reqwest::Client;
+use tokio::task::JoinHandle;
 
 static METRICS: OnceLock<Metrics> = OnceLock::new();
 
@@ -10,6 +9,7 @@ pub struct Metrics {
     registry: Registry,
     counter: CounterVec,
     latency: GaugeVec,
+    client: Client,
 }
 
 impl Metrics {
@@ -29,7 +29,9 @@ impl Metrics {
         registry.register(Box::new(counter.clone())).expect("register counter");
         registry.register(Box::new(latency.clone())).expect("register gauge");
 
-        Metrics { registry, counter, latency }
+        let client = Client::new();
+
+        Metrics { registry, counter, latency, client }
     }
 
     pub fn inc(&self, label: &str) {
@@ -42,7 +44,7 @@ impl Metrics {
             .set(seconds);
     }
 
-    pub fn push(&self, job: &str, push_url: &str) {
+    pub async fn push(&self, job: &str, push_url: &str) {
         let mut buffer = Vec::new();
         let encoder = TextEncoder::new();
         let mf = self.registry.gather();
@@ -52,10 +54,7 @@ impl Metrics {
 
         let push_url = format!("{}/metrics/job/{}", push_url.trim_end_matches('/'), job);
 
-        let client = Client::new();
-        let result = client.post(&push_url).body(body).send();
-
-        match result {
+        match self.client.post(&push_url).body(body).send().await {
             Ok(resp) => {
                 if !resp.status().is_success() {
                     eprintln!("Failed to push metrics: {}", resp.status());
@@ -84,8 +83,13 @@ pub fn record_latency(operation_type: &str, seconds: f64) {
     }
 }
 
-pub fn push_metrics(job: &str, push_url: &str) {
+pub fn push_metrics(job: &'static str, push_url: &'static str) -> Option<JoinHandle<()>> {
     if let Some(metrics) = METRICS.get() {
-        metrics.push(job, push_url);
+        let metrics = metrics.clone();
+        Some(tokio::spawn(async move {
+            metrics.push(job, push_url).await;
+        }))
+    } else {
+        None
     }
 }

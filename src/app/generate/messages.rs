@@ -153,13 +153,24 @@ impl GenerateMessages {
             let group = client.group(&group.id.into())?;
             group.sync_with_conn().await?;
             group.maybe_update_installations(None).await?;
+
             let words = rng.gen_range(0..*max_message_size);
             let words = lipsum::lipsum_words_with_rng(&mut *rng, words as usize);
             let message = content_type::new_message(words);
+
+            // === METRICS: time the send_message call ===
+            let start = std::time::Instant::now();
             group.send_message(&message).await?;
+            let elapsed = start.elapsed().as_secs_f64();
+
+            // === METRICS: record and push ===
+            crate::metrics::record_latency("send_message", elapsed);
+            crate::metrics::push_metrics("xdbg_debug", "http://localhost:9091");
+
             Ok(())
         } else {
             Err(MessageSendError::NoGroup)
         }
     }
+
 }
