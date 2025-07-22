@@ -7,16 +7,17 @@ static METRICS: OnceLock<Metrics> = OnceLock::new();
 
 pub struct Metrics {
     registry: Registry,
-    counter: CounterVec,
     latency: GaugeVec,
     client: Client,
+    // #[allow(dead_code)]
+    // counter: CounterVec,
 }
 
 impl Metrics {
     pub fn new() -> Self {
         let registry = Registry::new();
 
-        let counter = CounterVec::new(
+        let _counter = CounterVec::new(
             Opts::new("xdbg_test_events_total", "Count of xdbg test events"),
             &["label"],
         ).expect("valid counter");
@@ -26,16 +27,12 @@ impl Metrics {
             &["operation_type"],
         ).expect("valid gauge");
 
-        registry.register(Box::new(counter.clone())).expect("register counter");
+        // registry.register(Box::new(_counter.clone())).expect("register counter");
         registry.register(Box::new(latency.clone())).expect("register gauge");
 
         let client = Client::new();
 
-        Metrics { registry, counter, latency, client }
-    }
-
-    pub fn inc(&self, label: &str) {
-        self.counter.with_label_values(&[label]).inc();
+        Metrics { registry, latency, client }
     }
 
     pub fn set_latency(&self, operation_type: &str, seconds: f64) {
@@ -71,12 +68,6 @@ pub fn init_metrics() {
     METRICS.get_or_init(|| Metrics::new());
 }
 
-pub fn increment_metric(label: &str) {
-    if let Some(metrics) = METRICS.get() {
-        metrics.inc(label);
-    }
-}
-
 pub fn record_latency(operation_type: &str, seconds: f64) {
     if let Some(metrics) = METRICS.get() {
         metrics.set_latency(operation_type, seconds);
@@ -85,7 +76,6 @@ pub fn record_latency(operation_type: &str, seconds: f64) {
 
 pub fn push_metrics(job: &'static str, push_url: &'static str) -> Option<JoinHandle<()>> {
     if let Some(metrics) = METRICS.get() {
-        let metrics = metrics.clone();
         Some(tokio::spawn(async move {
             metrics.push(job, push_url).await;
         }))
