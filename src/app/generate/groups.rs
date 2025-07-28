@@ -8,7 +8,7 @@ use color_eyre::eyre::{self, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
 use std::time::Instant;
-use crate::metrics::{record_latency, record_member_count};
+use crate::metrics::{record_latency, record_member_count, push_metrics};
 
 pub struct GenerateGroups {
     group_store: GroupStore<'static>,
@@ -84,6 +84,7 @@ impl GenerateGroups {
                 let add_duration = add_start.elapsed().as_secs_f64();
                 record_latency("group_add_members", add_duration);
                 record_member_count("group_add_members", ids.len() as f64);
+                push_metrics("xdbg_debug", "http://localhost:9091");
 
                 bar_pointer.inc(1);
                 let mut members = invitees
