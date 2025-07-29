@@ -95,7 +95,7 @@ impl GenerateGroups {
                     .map(|i| i.inbox_id)
                     .collect::<Vec<InboxId>>();
                 members.push(identity.inbox_id);
-                sleep(Duration::from_secs(10)).await;
+                sleep(Duration::from_secs(60)).await;
 
                 Ok(Group {
                     id: group

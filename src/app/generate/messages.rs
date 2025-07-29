@@ -166,7 +166,7 @@ impl GenerateMessages {
             crate::metrics::record_latency("send_message", elapsed);
             crate::metrics::record_throughput("send_message");
             crate::metrics::push_metrics("xdbg_debug", "http://localhost:9091");
-            sleep(Duration::from_secs(10)).await;
+            sleep(Duration::from_secs(60)).await;
 
             Ok(())
         } else {
