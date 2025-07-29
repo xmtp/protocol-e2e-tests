@@ -1,4 +1,5 @@
 use crate::app::identity_lock::get_identity_lock;
+use tokio::time::{sleep, Duration};
 use crate::{
     app::{
         self,
@@ -165,6 +166,7 @@ impl GenerateMessages {
             crate::metrics::record_latency("send_message", elapsed);
             crate::metrics::record_throughput("send_message");
             crate::metrics::push_metrics("xdbg_debug", "http://localhost:9091");
+            sleep(Duration::from_secs(10)).await;
 
             Ok(())
         } else {

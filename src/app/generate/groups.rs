@@ -1,4 +1,5 @@
 use crate::app::identity_lock::get_identity_lock;
+use tokio::time::{sleep, Duration};
 use crate::app::{
     store::{Database, GroupStore, IdentityStore, RandomDatabase},
     types::*,
@@ -94,6 +95,8 @@ impl GenerateGroups {
                     .map(|i| i.inbox_id)
                     .collect::<Vec<InboxId>>();
                 members.push(identity.inbox_id);
+                sleep(Duration::from_secs(10)).await;
+
                 Ok(Group {
                     id: group
                         .group_id
