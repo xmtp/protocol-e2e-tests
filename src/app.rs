@@ -58,12 +58,19 @@ impl App {
 
     /// All data stored here
     fn data_directory() -> Result<PathBuf> {
-        let data = if let Some(dir) = ProjectDirs::from("org", "xmtp", "xdbg") {
-            Ok::<_, eyre::Report>(dir.data_dir().to_path_buf())
+        if let Ok(root) = std::env::var("XDBG_DB_ROOT") {
+            let path = PathBuf::from(&root);
+            info!(%root, "Using overridden XDBG_DB_ROOT");
+            return Ok(path);
+        }
+    
+        if let Some(dir) = directories::ProjectDirs::from("org", "xmtp", "xdbg") {
+            let path = dir.data_dir().to_path_buf();
+            info!(%path, "Using default data directory");
+            Ok(path)
         } else {
             eyre::bail!("No Home Directory Path could be retrieved");
-        }?;
-        Ok(data)
+        }
     }
 
     /// Directory for all SQLite files
