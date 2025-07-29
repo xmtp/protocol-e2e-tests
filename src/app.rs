@@ -60,13 +60,13 @@ impl App {
     fn data_directory() -> Result<PathBuf> {
         if let Ok(root) = std::env::var("XDBG_DB_ROOT") {
             let path = PathBuf::from(&root);
-            info!(%root, "Using overridden XDBG_DB_ROOT");
+            info!(path = %path.display(), "Using overridden XDBG_DB_ROOT");
             return Ok(path);
         }
-    
+        
         if let Some(dir) = directories::ProjectDirs::from("org", "xmtp", "xdbg") {
             let path = dir.data_dir().to_path_buf();
-            info!(%path, "Using default data directory");
+            info!(path = %path.display(), "Using default data directory");
             Ok(path)
         } else {
             eyre::bail!("No Home Directory Path could be retrieved");
