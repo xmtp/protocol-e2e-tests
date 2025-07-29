@@ -9,19 +9,13 @@ pub struct Metrics {
     registry: Registry,
     latency: GaugeVec,
     member_count: GaugeVec,
+    throughput: CounterVec,
     client: Client,
-    // #[allow(dead_code)]
-    // counter: CounterVec,
 }
 
 impl Metrics {
     pub fn new() -> Self {
         let registry = Registry::new();
-
-        let _counter = CounterVec::new(
-            Opts::new("xdbg_test_events_total", "Count of xdbg test events"),
-            &["label"],
-        ).expect("valid counter");
 
         let latency = GaugeVec::new(
             Opts::new("xdbg_operation_latency_seconds", "Latency of xdbg operations"),
@@ -33,13 +27,24 @@ impl Metrics {
             &["operation_type"],
         ).expect("valid gauge");
 
-        // registry.register(Box::new(_counter.clone())).expect("register counter");
+        let throughput = CounterVec::new(
+            Opts::new("xdbg_messages_sent_total", "Total number of messages sent"),
+            &["operation_type"],
+        ).expect("valid counter");
+
         registry.register(Box::new(latency.clone())).expect("register latency");
         registry.register(Box::new(member_count.clone())).expect("register member count");
+        registry.register(Box::new(throughput.clone())).expect("register throughput");
 
         let client = Client::new();
 
-        Metrics { registry, latency, member_count, client }
+        Metrics {
+            registry,
+            latency,
+            member_count,
+            throughput,
+            client,
+        }
     }
 
     pub fn set_latency(&self, operation_type: &str, seconds: f64) {
@@ -52,6 +57,12 @@ impl Metrics {
         self.member_count
             .with_label_values(&[operation_type])
             .set(count);
+    }
+
+    pub fn inc_throughput(&self, operation_type: &str) {
+        self.throughput
+            .with_label_values(&[operation_type])
+            .inc();
     }
 
     pub async fn push(&self, job: &str, push_url: &str) {
@@ -90,6 +101,12 @@ pub fn record_latency(operation_type: &str, seconds: f64) {
 pub fn record_member_count(operation_type: &str, count: f64) {
     if let Some(metrics) = METRICS.get() {
         metrics.set_member_count(operation_type, count);
+    }
+}
+
+pub fn record_throughput(operation_type: &str) {
+    if let Some(metrics) = METRICS.get() {
+        metrics.inc_throughput(operation_type);
     }
 }
 
