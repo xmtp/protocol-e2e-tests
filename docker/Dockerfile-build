@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1.6
+
+# ---- Build stage: compile xdbg inside Docker (avoids glibc mismatch) ----
+FROM rust:1-bookworm AS builder
+WORKDIR /src
+
+# Build deps (adjust if your crate needs more)
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Copy the monorepo (build context should be repo root)
+COPY . .
+
+# Optional caching for faster rebuilds (requires BuildKit)
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --package xdbg
+
+# ---- Runtime stage ----
+FROM debian:bookworm-slim
+
+# Keep DBs/logs in a predictable place; mount this as a volume if desired
+WORKDIR /work
+
+# Minimal runtime deps:
+# - tini: proper signal handling/zombie reaping
+# - bash: for your runner script
+# - ca-certificates: TLS/HTTPS
+# - procps: ps/top for debugging (optional but handy)
+# - libssl3: if the binary dynamically links OpenSSL
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends tini bash ca-certificates procps libssl3 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Bring in compiled binary and your runner
+COPY --from=builder /src/target/release/xdbg /usr/local/bin/xdbg
+COPY xmtp_debug/newrunner.sh /usr/local/bin/newrunner.sh
+RUN chmod +x /usr/local/bin/xdbg /usr/local/bin/newrunner.sh
+
+ENV RUST_LOG=info
+
+# tini as PID 1; exit container if newrunner.sh exits
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/newrunner.sh"]
