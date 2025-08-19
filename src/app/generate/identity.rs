@@ -121,7 +121,7 @@ impl GenerateIdentity {
 
                 let wallet = crate::app::generate_wallet();
                 let register_start = Instant::now();
-                let user = app::new_registered_client(&network, Some(&wallet)).await?;
+                let user = app::new_registered_client(network.clone(), Some(&wallet)).await?;
                 let register_secs = register_start.elapsed().as_secs_f64();
 
                 record_latency(&format!("identity_register_{}", version), register_secs);
@@ -229,7 +229,6 @@ impl GenerateIdentity {
         bar.finish();
         bar.reset();
         let mut set: tokio::task::JoinSet<Result<_, eyre::Error>> = tokio::task::JoinSet::new();
-        // ensure all the identities are registered
         let tmp = Arc::new(app::temp_client(network, None).await?);
         let conn = Arc::new(tmp.store().db());
         let bar_ref = bar.clone();
