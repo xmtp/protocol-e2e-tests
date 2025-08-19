@@ -11,6 +11,7 @@ use color_eyre::eyre::{self, Result, eyre};
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::{Rng, SeedableRng, rngs::SmallRng, seq::SliceRandom};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use xmtp_mls::groups::summary::SyncSummary;
 
 mod content_type;
@@ -37,6 +38,27 @@ pub struct GenerateMessages {
     opts: args::MessageGenerateOpts,
 }
 
+fn now_unix_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn csv_metric(metric_kind: &str, metric_name: &str, value: f64, labels: &[(&str, &str)]) {
+    let ts = now_unix_ms();
+    let labels_str = if labels.is_empty() {
+        String::new()
+    } else {
+        labels
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join(";")
+    };
+    println!("{},{},{:.6},{},{}", metric_kind, metric_name, value, ts, labels_str);
+}
+
 impl GenerateMessages {
     pub fn new(
         db: Arc<redb::Database>,
@@ -52,13 +74,19 @@ impl GenerateMessages {
             r#loop, interval, ..
         } = self.opts;
 
+        let skip_sleep = std::env::var("XDBG_SKIP_SLEEP")
+            .map(|v| v.eq_ignore_ascii_case("TRUE"))
+            .unwrap_or(false);
+
         self.send_many_messages(self.db.clone(), n, concurrency)
             .await?;
 
         if r#loop {
             loop {
                 info!(time = ?std::time::Instant::now(), amount = n, "sending messages");
-                tokio::time::sleep(*interval).await;
+                if !skip_sleep {
+                    tokio::time::sleep(*interval).await;
+                }
                 self.send_many_messages(self.db.clone(), n, concurrency)
                     .await?;
             }
@@ -134,6 +162,10 @@ impl GenerateMessages {
             ..
         } = opts;
 
+        let skip_sleep = std::env::var("XDBG_SKIP_SLEEP")
+            .map(|v| v.eq_ignore_ascii_case("TRUE"))
+            .unwrap_or(false);
+
         let rng = &mut SmallRng::from_entropy();
         let group = group_store
             .random(&network, rng)?
@@ -165,8 +197,25 @@ impl GenerateMessages {
 
             crate::metrics::record_latency("send_message", elapsed);
             crate::metrics::record_throughput("send_message");
+
+            csv_metric(
+                "latency_seconds",
+                "send_message",
+                elapsed,
+                &[("operation", "send_message")],
+            );
+            csv_metric(
+                "throughput_events",
+                "send_message",
+                1.0,
+                &[("operation", "send_message")],
+            );
+
             crate::metrics::push_metrics("xdbg_debug", "http://localhost:9091");
-            sleep(Duration::from_secs(60)).await;
+
+            if !skip_sleep {
+                sleep(Duration::from_secs(60)).await;
+            }
 
             Ok(())
         } else {

@@ -8,7 +8,7 @@ use crate::{app, args};
 use color_eyre::eyre::{self, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use crate::metrics::{record_latency, record_throughput, record_member_count, push_metrics};
 
 pub struct GenerateGroups {
@@ -16,6 +16,35 @@ pub struct GenerateGroups {
     identity_store: IdentityStore<'static>,
     // metadata_store: MetadataStore<'static>,
     network: args::BackendOpts,
+}
+
+// ---- CSV metric logging helpers ----
+
+/// Returns current UNIX timestamp in milliseconds.
+fn now_unix_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+/// Print a single metric sample to stdout in CSV form.
+/// Columns: metric_kind,metric_name,value,timestamp_ms,labels
+/// `labels` is a semicolon-separated k=v list (may be empty).
+fn csv_metric(metric_kind: &str, metric_name: &str, value: f64, labels: &[(&str, &str)]) {
+    let ts = now_unix_ms();
+    let labels_str = if labels.is_empty() {
+        String::new()
+    } else {
+        labels
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join(";")
+    };
+    // Note: keep a stable column order for easy ingestion.
+    // Example line: latency_seconds,group_create,0.123456,1724058123123,operation=create
+    println!("{},{},{:.6},{},{}", metric_kind, metric_name, value, ts, labels_str);
 }
 
 impl GenerateGroups {
@@ -42,6 +71,10 @@ impl GenerateGroups {
         invitees: usize,
         concurrency: usize,
     ) -> Result<Vec<Group>> {
+        let skip_sleep = std::env::var("XDBG_SKIP_SLEEP")
+            .map(|v| v.eq_ignore_ascii_case("TRUE"))
+            .unwrap_or(false);
+
         // TODO: Check if identities still exist
         let mut groups: Vec<Group> = Vec::with_capacity(n);
         let style = ProgressStyle::with_template(
@@ -79,14 +112,44 @@ impl GenerateGroups {
                 let group = client.create_group(Default::default(), Default::default())?;
                 let create_duration = create_start.elapsed().as_secs_f64();
                 record_latency("group_create", create_duration);
+                csv_metric(
+                    "latency_seconds",
+                    "group_create",
+                    create_duration,
+                    &[("operation", "create")],
+                );
+
                 record_throughput("group_create");
+                csv_metric("throughput_events", "group_create", 1.0, &[("operation", "create")]);
 
                 let add_start = Instant::now();
                 group.add_members_by_inbox_id(ids.as_slice()).await?;
                 let add_duration = add_start.elapsed().as_secs_f64();
                 record_latency("group_add_members", add_duration);
+                csv_metric(
+                    "latency_seconds",
+                    "group_add_members",
+                    add_duration,
+                    &[("operation", "add_members")],
+                );
+
                 record_member_count("group_add_members", ids.len() as f64);
+                csv_metric(
+                    "member_count",
+                    "group_add_members",
+                    ids.len() as f64,
+                    &[("operation", "add_members")],
+                );
+
                 record_throughput("group_add_members");
+                csv_metric(
+                    "throughput_events",
+                    "group_add_members",
+                    1.0,
+                    &[("operation", "add_members")],
+                );
+
+                // Push to Pushgateway as before.
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
                 bar_pointer.inc(1);
@@ -95,7 +158,10 @@ impl GenerateGroups {
                     .map(|i| i.inbox_id)
                     .collect::<Vec<InboxId>>();
                 members.push(identity.inbox_id);
-                sleep(Duration::from_secs(60)).await;
+
+                if !skip_sleep {
+                    sleep(Duration::from_secs(60)).await;
+                }
 
                 Ok(Group {
                     id: group

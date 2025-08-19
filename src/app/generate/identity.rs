@@ -1,4 +1,5 @@
 use std::{collections::HashSet, sync::Arc};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::app::store::{Database, IdentityStore};
 use crate::app::{self, types::Identity};
@@ -6,6 +7,9 @@ use crate::args;
 
 use color_eyre::eyre::{self, Result, bail};
 use indicatif::{ProgressBar, ProgressStyle};
+use tokio::time::{sleep, Duration};
+
+use crate::metrics::{record_latency, record_throughput, push_metrics};
 
 /// Identity Generation
 pub struct GenerateIdentity {
@@ -79,22 +83,119 @@ impl GenerateIdentity {
         let mut set: tokio::task::JoinSet<Result<_, eyre::Error>> = tokio::task::JoinSet::new();
 
         let network = &self.network;
-
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+
+        let version = version_label();
+        let skip_sleep = std::env::var("XDBG_SKIP_SLEEP")
+            .map(|v| v.eq_ignore_ascii_case("TRUE"))
+            .unwrap_or(false);
 
         for _ in 0..n {
             let bar_pointer = bar.clone();
             let network = network.clone();
             let semaphore = semaphore.clone();
+            let version = version.clone();
+
             set.spawn(async move {
                 let _permit = semaphore.acquire().await?;
+
+                let client_init_start = Instant::now();
+                let _tmp_client = app::temp_client(&network, None).await?;
+                let client_init_secs = client_init_start.elapsed().as_secs_f64();
+
+                record_latency(&format!("identity_client_init_{}", version), client_init_secs);
+                record_throughput("identity_client_init");
+                csv_metric(
+                    "latency_seconds",
+                    "identity_client_init",
+                    client_init_secs,
+                    &[("phase", "client_init"), ("version", &version)],
+                );
+                csv_metric(
+                    "throughput_events",
+                    "identity_client_init",
+                    1.0,
+                    &[("phase", "client_init"), ("version", &version)],
+                );
+                push_metrics("xdbg_debug", "http://localhost:9091");
+
                 let wallet = crate::app::generate_wallet();
-                // TODO: maybe create all new clients in a temp directory
-                // then copy + store at the same time
-                // in case CLI is exited before finishing
-                let user = app::new_registered_client(network, Some(&wallet)).await?;
+                let register_start = Instant::now();
+                let user = app::new_registered_client(&network, Some(&wallet)).await?;
+                let register_secs = register_start.elapsed().as_secs_f64();
+
+                record_latency(&format!("identity_register_{}", version), register_secs);
+                record_throughput("identity_register");
+                csv_metric(
+                    "latency_seconds",
+                    "identity_register",
+                    register_secs,
+                    &[("phase", "register"), ("version", &version)],
+                );
+                csv_metric(
+                    "throughput_events",
+                    "identity_register",
+                    1.0,
+                    &[("phase", "register"), ("version", &version)],
+                );
+                push_metrics("xdbg_debug", "http://localhost:9091");
+
+                let identity = Identity::from_libxmtp(user.identity(), wallet)?;
+
+                let tmp = Arc::new(app::temp_client(&network, None).await?);
+                let conn = Arc::new(tmp.store().db());
+                let id_hex = hex::encode(identity.inbox_id);
+
+                let assoc_start = Instant::now();
+                let timeout = Duration::from_secs(30);
+                let poll_every = Duration::from_millis(200);
+                let deadline = tokio::time::Instant::now() + timeout;
+
+                let mut assoc_ready = false;
+                loop {
+                    let state = tmp
+                        .identity_updates()
+                        .get_latest_association_state(&conn, &id_hex)
+                        .await?;
+                    if !state.members().is_empty() {
+                        assoc_ready = true;
+                        break;
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    if !skip_sleep {
+                        sleep(poll_every).await;
+                    }
+                }
+                let assoc_secs = assoc_start.elapsed().as_secs_f64();
+
+                record_latency(&format!("identity_assoc_ready_{}", version), assoc_secs);
+                record_throughput("identity_assoc_ready");
+                csv_metric(
+                    "latency_seconds",
+                    "identity_assoc_ready",
+                    assoc_secs,
+                    &[
+                        ("phase", "assoc_ready"),
+                        ("version", &version),
+                        ("success", if assoc_ready { "true" } else { "false" }),
+                    ],
+                );
+                csv_metric(
+                    "throughput_events",
+                    "identity_assoc_ready",
+                    1.0,
+                    &[
+                        ("phase", "assoc_ready"),
+                        ("version", &version),
+                        ("success", if assoc_ready { "true" } else { "false" }),
+                    ],
+                );
+                push_metrics("xdbg_debug", "http://localhost:9091");
+
                 bar_pointer.inc(1);
-                Identity::from_libxmtp(user.identity(), wallet)
+                Ok(identity)
             });
 
             if set.len() == app::get_fdlimit() {
@@ -168,4 +269,29 @@ impl GenerateIdentity {
         }
         Ok(identities)
     }
+}
+
+fn now_unix_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn csv_metric(metric_kind: &str, metric_name: &str, value: f64, labels: &[(&str, &str)]) {
+    let ts = now_unix_ms();
+    let labels_str = if labels.is_empty() {
+        String::new()
+    } else {
+        labels
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join(";")
+    };
+    println!("{},{},{:.6},{},{}", metric_kind, metric_name, value, ts, labels_str);
+}
+
+fn version_label() -> String {
+    std::env::var("XDBG_VERSION").unwrap_or_else(|_| "na".to_string())
 }
