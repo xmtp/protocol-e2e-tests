@@ -20,7 +20,7 @@ pub struct GenerateGroups {
 
 // ---- CSV metric logging helpers ----
 
-/// Returns current UNIX timestamp in milliseconds.
+// ----------------------------
 fn now_unix_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -42,8 +42,6 @@ fn csv_metric(metric_kind: &str, metric_name: &str, value: f64, labels: &[(&str,
             .collect::<Vec<_>>()
             .join(";")
     };
-    // Note: keep a stable column order for easy ingestion.
-    // Example line: latency_seconds,group_create,0.123456,1724058123123,operation=create
     println!("{},{},{:.6},{},{}", metric_kind, metric_name, value, ts, labels_str);
 }
 
@@ -65,22 +63,20 @@ impl GenerateGroups {
             .map(|i| i.map(|i| Ok(i.value()))))
     }
 
+    /// Create `n` groups. We **always** add at least one member so the test touches the node.
     pub async fn create_groups(
         &self,
         n: usize,
         invitees: usize,
         concurrency: usize,
     ) -> Result<Vec<Group>> {
-        let skip_sleep = std::env::var("XDBG_SKIP_SLEEP")
-            .map(|v| v.eq_ignore_ascii_case("TRUE"))
-            .unwrap_or(false);
-
-        // TODO: Check if identities still exist
         let mut groups: Vec<Group> = Vec::with_capacity(n);
+
         let style = ProgressStyle::with_template(
             "{bar} {pos}/{len} elapsed {elapsed} remaining {eta_precise}",
         );
         let bar = ProgressBar::new(n as u64).with_style(style.unwrap());
+
         let mut set: tokio::task::JoinSet<Result<_, eyre::Error>> = tokio::task::JoinSet::new();
         let mut handles = vec![];
 
@@ -89,12 +85,21 @@ impl GenerateGroups {
 
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
 
+        // ENV toggle to skip sleeps
+        let skip_sleep = std::env::var("XDBG_SKIP_SLEEP")
+            .map(|v| v.eq_ignore_ascii_case("TRUE"))
+            .unwrap_or(false);
+
+        // Force at least one invitee to ensure node write
+        let invitee_count = invitees.max(1);
+
         for _ in 0..n {
             let identity = self.identity_store.random(network, &mut rng)?.unwrap();
-            let invitees = self.identity_store.random_n(network, &mut rng, invitees)?;
+            let invitees = self.identity_store.random_n(network, &mut rng, invitee_count)?;
             let bar_pointer = bar.clone();
             let network = network.clone();
             let semaphore = semaphore.clone();
+
             handles.push(set.spawn(async move {
                 let _permit = semaphore.acquire().await?;
                 let identity_lock = get_identity_lock(&identity.inbox_id)?;
@@ -103,56 +108,65 @@ impl GenerateGroups {
                 debug!(address = identity.address(), "group owner");
                 let client = app::client_from_identity(&identity, &network).await?;
 
+                // Build member list to add (hex inbox ids)
                 let ids = invitees
                     .iter()
                     .map(|i| hex::encode(i.inbox_id))
                     .collect::<Vec<_>>();
 
+                // -------- group_create_client_only (sync, local) --------
                 let create_start = Instant::now();
                 let group = client.create_group(Default::default(), Default::default())?;
-                let create_duration = create_start.elapsed().as_secs_f64();
-                record_latency("group_create", create_duration);
+                let create_secs = create_start.elapsed().as_secs_f64();
+
+                // Metrics + CSV
+                record_latency("group_create_client_only", create_secs);
+                record_throughput("group_create_client_only");
                 csv_metric(
                     "latency_seconds",
-                    "group_create",
-                    create_duration,
-                    &[("operation", "create")],
+                    "group_create_client_only",
+                    create_secs,
+                    &[("phase", "create_group")],
                 );
+                csv_metric(
+                    "throughput_events",
+                    "group_create_client_only",
+                    1.0,
+                    &[("phase", "create_group")],
+                );
+                push_metrics("xdbg_debug", "http://localhost:9091");
 
-                record_throughput("group_create");
-                csv_metric("throughput_events", "group_create", 1.0, &[("operation", "create")]);
-
+                // -------- group_add_members (awaited, node RPC) --------
                 let add_start = Instant::now();
                 group.add_members_by_inbox_id(ids.as_slice()).await?;
-                let add_duration = add_start.elapsed().as_secs_f64();
-                record_latency("group_add_members", add_duration);
+                let add_secs = add_start.elapsed().as_secs_f64();
+
+                record_latency("group_add_members", add_secs);
+                record_member_count("group_add_members", ids.len() as f64);
+                record_throughput("group_add_members");
                 csv_metric(
                     "latency_seconds",
                     "group_add_members",
-                    add_duration,
-                    &[("operation", "add_members")],
+                    add_secs,
+                    &[
+                        ("phase", "add_members"),
+                        ("member_count", &ids.len().to_string()),
+                    ],
                 );
-
-                record_member_count("group_add_members", ids.len() as f64);
-                csv_metric(
-                    "member_count",
-                    "group_add_members",
-                    ids.len() as f64,
-                    &[("operation", "add_members")],
-                );
-
-                record_throughput("group_add_members");
                 csv_metric(
                     "throughput_events",
                     "group_add_members",
                     1.0,
-                    &[("operation", "add_members")],
+                    &[
+                        ("phase", "add_members"),
+                        ("member_count", &ids.len().to_string()),
+                    ],
                 );
-
-                // Push to Pushgateway as before.
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
                 bar_pointer.inc(1);
+
+                // Build final member list for the return struct
                 let mut members = invitees
                     .into_iter()
                     .map(|i| i.inbox_id)
@@ -174,17 +188,12 @@ impl GenerateGroups {
                 })
             }));
 
-            // going above 128 we hit "unable to open database errors"
-            // This may be related to open file limits
+            // throttle fanout: avoid too many concurrent tasks
             if set.len() >= 64 {
                 if let Some(group) = set.join_next().await {
                     match group {
-                        Ok(group) => {
-                            groups.push(group?);
-                        }
-                        Err(e) => {
-                            error!("{}", e.to_string());
-                        }
+                        Ok(group) => groups.push(group?),
+                        Err(e) => error!("{}", e.to_string()),
                     }
                 }
             }
@@ -192,14 +201,11 @@ impl GenerateGroups {
 
         while let Some(group) = set.join_next().await {
             match group {
-                Ok(group) => {
-                    groups.push(group?);
-                }
-                Err(e) => {
-                    error!("{}", e.to_string());
-                }
+                Ok(group) => groups.push(group?),
+                Err(e) => error!("{}", e.to_string()),
             }
         }
+
         self.group_store.set_all(groups.as_slice(), &self.network)?;
         Ok(groups)
     }
