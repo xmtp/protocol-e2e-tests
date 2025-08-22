@@ -91,7 +91,8 @@ impl GenerateGroups {
         Ok(())
     }
 
-    /// Create `n` groups. We **always** add at least one member so the test touches the node.
+    /// Create n groups and always add at least one member so the test touches the node.
+    /// You can choose the member count via CLI invitees or env XDBG_FORCE_INVITEES=<N>.
     pub async fn create_groups(
         &self,
         n: usize,
@@ -124,8 +125,11 @@ impl GenerateGroups {
             .map(|v| v.eq_ignore_ascii_case("TRUE"))
             .unwrap_or(false);
 
-        // Force at least one invitee to ensure node write
-        let invitee_count = invitees.max(1);
+        // Member count selection
+        let forced_invitees = std::env::var("XDBG_FORCE_INVITEES")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok());
+        let invitee_count = forced_invitees.unwrap_or(invitees).max(1);
 
         for _ in 0..n {
             let identity = self.identity_store.random(network, &mut rng)?.unwrap();
@@ -149,6 +153,7 @@ impl GenerateGroups {
                     .collect::<Vec<_>>();
 
                 // -------- group_create_client_only (sync, local) --------
+                let flow_start = Instant::now(); // total create-with-members KPI starts here
                 let create_start = Instant::now();
                 let group = client.create_group(Default::default(), Default::default())?;
                 let create_secs = create_start.elapsed().as_secs_f64();
@@ -195,12 +200,48 @@ impl GenerateGroups {
                         ("member_count", &ids.len().to_string()),
                     ],
                 );
+                // Derived per-member metric for easy comparison across batch sizes
+                let per_member = add_secs / (ids.len() as f64);
+                record_latency("group_add_members_per_member", per_member);
+                csv_metric(
+                    "latency_seconds",
+                    "group_add_members_per_member",
+                    per_member,
+                    &[
+                        ("phase", "add_members"),
+                        ("member_count", &ids.len().to_string()),
+                    ],
+                );
+
+                // -------- total create -> add ACK KPI --------
+                let total_secs = flow_start.elapsed().as_secs_f64();
+                record_latency("group_create_with_members", total_secs);
+                record_throughput("group_create_with_members");
+                csv_metric(
+                    "latency_seconds",
+                    "group_create_with_members",
+                    total_secs,
+                    &[
+                        ("phase", "create_with_members"),
+                        ("member_count", &ids.len().to_string()),
+                    ],
+                );
+                csv_metric(
+                    "throughput_events",
+                    "group_create_with_members",
+                    1.0,
+                    &[
+                        ("phase", "create_with_members"),
+                        ("member_count", &ids.len().to_string()),
+                    ],
+                );
+
                 // Breadcrumb that ACK happened
                 csv_metric(
                     "event",
                     "group_add_members_ack",
                     1.0,
-                    &[("member", &ids[0])],
+                    &[("member_0", &ids[0])],
                 );
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
@@ -208,8 +249,7 @@ impl GenerateGroups {
                 if verify_group {
                     let invitee_identity = &invitees[0];
                     let reader = app::client_from_identity(invitee_identity, &network).await?;
-
-                    // FIX: don't move group.group_id; convert a CLONE and borrow that.
+                    // Do not move group_id; convert a CLONE for the reader
                     let gid_for_reader = group.group_id.clone().into();
                     let g2 = reader.group(&gid_for_reader)?;
                     g2.sync_with_conn().await?; // fails if membership not live
@@ -217,7 +257,7 @@ impl GenerateGroups {
                         "event",
                         "group_member_visible",
                         1.0,
-                        &[("member", &ids[0])],
+                        &[("member_0", &ids[0])],
                     );
                 }
 
