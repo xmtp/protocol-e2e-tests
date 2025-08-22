@@ -18,8 +18,8 @@ pub struct GenerateGroups {
     network: args::BackendOpts,
 }
 
-// ---- CSV metric logging helpers ----
-
+// ----------------------------
+// CSV helpers
 // ----------------------------
 fn now_unix_ms() -> u128 {
     SystemTime::now()
@@ -63,6 +63,34 @@ impl GenerateGroups {
             .map(|i| i.map(|i| Ok(i.value()))))
     }
 
+    /// Human-readable dump of locally persisted groups (REDB).
+    /// This reads what the generator saved after successful node ops.
+    pub fn dump_groups_human(&self) -> eyre::Result<()> {
+        let mut found = false;
+        if let Some(iter) = self.load_groups()? {
+            for g in iter {
+                let g = g?;
+                if !found {
+                    println!("=== Local GroupStore dump (network: {}) ===", url::Url::from(self.network.clone()));
+                    found = true;
+                }
+                println!(
+                    "group id={} members={} created_by={}",
+                    hex::encode(g.id),
+                    g.members.len(),
+                    hex::encode(g.created_by)
+                );
+                for m in &g.members {
+                    println!("  - member {}", hex::encode(m));
+                }
+            }
+        }
+        if !found {
+            println!("(no groups in local store for {})", url::Url::from(self.network.clone()));
+        }
+        Ok(())
+    }
+
     /// Create `n` groups. We **always** add at least one member so the test touches the node.
     pub async fn create_groups(
         &self,
@@ -85,8 +113,14 @@ impl GenerateGroups {
 
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
 
-        // ENV toggle to skip sleeps
+        // ENV toggles
         let skip_sleep = std::env::var("XDBG_SKIP_SLEEP")
+            .map(|v| v.eq_ignore_ascii_case("TRUE"))
+            .unwrap_or(false);
+        let verify_group = std::env::var("XDBG_VERIFY_GROUP")
+            .map(|v| v.eq_ignore_ascii_case("TRUE"))
+            .unwrap_or(false);
+        let dump_groups = std::env::var("XDBG_DUMP_GROUPS")
             .map(|v| v.eq_ignore_ascii_case("TRUE"))
             .unwrap_or(false);
 
@@ -119,7 +153,6 @@ impl GenerateGroups {
                 let group = client.create_group(Default::default(), Default::default())?;
                 let create_secs = create_start.elapsed().as_secs_f64();
 
-                // Metrics + CSV
                 record_latency("group_create_client_only", create_secs);
                 record_throughput("group_create_client_only");
                 csv_metric(
@@ -162,7 +195,26 @@ impl GenerateGroups {
                         ("member_count", &ids.len().to_string()),
                     ],
                 );
+                // Breadcrumb that ACK happened
+                csv_metric(
+                    "event",
+                    "group_add_members_ack",
+                    1.0,
+                    &[("member", &ids[0])],
+                );
                 push_metrics("xdbg_debug", "http://localhost:9091");
+
+                // -------- optional reader-side verification --------
+                let invitee_identity = &invitees[0];
+                let reader = app::client_from_identity(invitee_identity, &network).await?;
+                let g2 = reader.group(&group.group_id.into())?;
+                g2.sync_with_conn().await?; // fails if membership not live
+                csv_metric(
+                    "event",
+                    "group_member_visible",
+                    1.0,
+                    &[("member", &ids[0])],
+                );
 
                 bar_pointer.inc(1);
 
@@ -206,7 +258,11 @@ impl GenerateGroups {
             }
         }
 
+        // Persist locally only after successful ops
         self.group_store.set_all(groups.as_slice(), &self.network)?;
+
+        let _ = self.dump_groups_human();
+
         Ok(groups)
     }
 }
