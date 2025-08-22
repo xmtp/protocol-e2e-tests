@@ -205,16 +205,21 @@ impl GenerateGroups {
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
                 // -------- optional reader-side verification --------
-                let invitee_identity = &invitees[0];
-                let reader = app::client_from_identity(invitee_identity, &network).await?;
-                let g2 = reader.group(&group.group_id.into())?;
-                g2.sync_with_conn().await?; // fails if membership not live
-                csv_metric(
-                    "event",
-                    "group_member_visible",
-                    1.0,
-                    &[("member", &ids[0])],
-                );
+                if verify_group {
+                    let invitee_identity = &invitees[0];
+                    let reader = app::client_from_identity(invitee_identity, &network).await?;
+
+                    // FIX: don't move group.group_id; convert a CLONE and borrow that.
+                    let gid_for_reader = group.group_id.clone().into();
+                    let g2 = reader.group(&gid_for_reader)?;
+                    g2.sync_with_conn().await?; // fails if membership not live
+                    csv_metric(
+                        "event",
+                        "group_member_visible",
+                        1.0,
+                        &[("member", &ids[0])],
+                    );
+                }
 
                 bar_pointer.inc(1);
 
@@ -261,7 +266,10 @@ impl GenerateGroups {
         // Persist locally only after successful ops
         self.group_store.set_all(groups.as_slice(), &self.network)?;
 
-        let _ = self.dump_groups_human();
+        // Optional: dump local store for confirmation
+        if dump_groups {
+            let _ = self.dump_groups_human();
+        }
 
         Ok(groups)
     }
