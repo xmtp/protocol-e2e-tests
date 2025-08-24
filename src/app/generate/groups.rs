@@ -133,7 +133,21 @@ impl GenerateGroups {
 
         for _ in 0..n {
             let identity = self.identity_store.random(network, &mut rng)?.unwrap();
-            let invitees = self.identity_store.random_n(network, &mut rng, invitee_count)?;
+
+            // Get candidates, exclude the owner to avoid duplicates, then trim to invitee_count.
+            let mut invitees_vec = self.identity_store.random_n(network, &mut rng, invitee_count + 1)?;
+            invitees_vec.retain(|i| i.inbox_id != identity.inbox_id);
+            if invitees_vec.is_empty() {
+                if let Some(other) = self.identity_store.random(network, &mut rng)? {
+                    if other.inbox_id != identity.inbox_id {
+                        invitees_vec.push(other);
+                    }
+                }
+            }
+            if invitees_vec.len() > invitee_count {
+                invitees_vec.truncate(invitee_count);
+            }
+
             let bar_pointer = bar.clone();
             let network = network.clone();
             let semaphore = semaphore.clone();
@@ -147,7 +161,7 @@ impl GenerateGroups {
                 let client = app::client_from_identity(&identity, &network).await?;
 
                 // Build member list to add (hex inbox ids)
-                let ids = invitees
+                let ids = invitees_vec
                     .iter()
                     .map(|i| hex::encode(i.inbox_id))
                     .collect::<Vec<_>>();
@@ -157,6 +171,17 @@ impl GenerateGroups {
                 let create_start = Instant::now();
                 let group = client.create_group(Default::default(), Default::default())?;
                 let create_secs = create_start.elapsed().as_secs_f64();
+
+                // Print the created group id (human) and emit a CSV event
+                let gid_hex = hex::encode(&group.group_id);
+                let creator_hex = hex::encode(identity.inbox_id);
+                println!("group_created id={} created_by={}", gid_hex, creator_hex);
+                csv_metric(
+                    "event",
+                    "group_created",
+                    1.0,
+                    &[("group_id", &gid_hex), ("created_by", &creator_hex)],
+                );
 
                 record_latency("group_create_client_only", create_secs);
                 record_throughput("group_create_client_only");
@@ -241,30 +266,51 @@ impl GenerateGroups {
                     "event",
                     "group_add_members_ack",
                     1.0,
-                    &[("member_0", &ids[0])],
+                    &[("member_0", &ids[0]), ("group_id", &gid_hex)],
                 );
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
-                // -------- optional reader-side verification --------
+                // -------- optional reader-side verification with polling --------
                 if verify_group {
-                    let invitee_identity = &invitees[0];
+                    let invitee_identity = &invitees_vec[0];
                     let reader = app::client_from_identity(invitee_identity, &network).await?;
-                    // Do not move group_id; convert a CLONE for the reader
                     let gid_for_reader = group.group_id.clone().into();
-                    let g2 = reader.group(&gid_for_reader)?;
-                    g2.sync_with_conn().await?; // fails if membership not live
+
+                    let verify_timeout = Duration::from_secs(15);
+                    let poll_every = Duration::from_millis(200);
+                    let deadline = tokio::time::Instant::now() + verify_timeout;
+
+                    let mut visible = false;
+                    while tokio::time::Instant::now() < deadline {
+                        let _ = reader.sync_welcomes().await;
+                        match reader.group(&gid_for_reader) {
+                            Ok(g2) => {
+                                if g2.sync_with_conn().await.is_ok() {
+                                    visible = true;
+                                    break;
+                                }
+                            }
+                            Err(_) => {
+                                // not visible yet; keep polling
+                            }
+                        }
+                        if !skip_sleep {
+                            sleep(poll_every).await;
+                        }
+                    }
+
                     csv_metric(
                         "event",
                         "group_member_visible",
-                        1.0,
-                        &[("member_0", &ids[0])],
+                        if visible { 1.0 } else { 0.0 },
+                        &[("member_0", &ids[0]), ("group_id", &gid_hex)],
                     );
                 }
 
                 bar_pointer.inc(1);
 
-                // Build final member list for the return struct
-                let mut members = invitees
+                // Build final member list for the return struct (exclude owner duplicates)
+                let mut members = invitees_vec
                     .into_iter()
                     .map(|i| i.inbox_id)
                     .collect::<Vec<InboxId>>();

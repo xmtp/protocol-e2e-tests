@@ -222,19 +222,22 @@ impl BackendOpts {
         use BackendKind::*;
 
         if let Some(p) = &self.payer_url {
+            eprintln!("[xdbg] payer endpoint (from --payer-url): {}", p);
             return Ok(p.clone());
         }
 
-        match (self.backend, self.d14n) {
-            (Dev, false) => eyre::bail!("No payer for V3"),
-            (Staging, false) => eyre::bail!("No payer for V3"),
-            (Production, false) => eyre::bail!("No payer for V3"),
-            (Local, false) => eyre::bail!("No payer for V3"),
-            (Dev, true) => Ok((*crate::constants::XMTP_DEV_PAYER).clone()),
-            (Staging, true) => Ok((*crate::constants::XMTP_STAGING_PAYER).clone()),
-            (Production, true) => Ok((*crate::constants::XMTP_PRODUCTION_PAYER).clone()),
-            (Local, true) => Ok((*crate::constants::XMTP_LOCAL_PAYER).clone()),
-        }
+        let resolved = match (self.backend, self.d14n) {
+            (Dev, false) | (Staging, false) | (Production, false) | (Local, false) => {
+                eyre::bail!("No payer for V3")
+            }
+            (Dev, true)        => (*crate::constants::XMTP_DEV_PAYER).clone(),
+            (Staging, true)    => (*crate::constants::XMTP_STAGING_PAYER).clone(),
+            (Production, true) => (*crate::constants::XMTP_PRODUCTION_PAYER).clone(),
+            (Local, true)      => (*crate::constants::XMTP_LOCAL_PAYER).clone(),
+        };
+
+        eprintln!("[xdbg] payer endpoint (resolved): {}", resolved);
+        Ok(resolved)
     }
 
     pub fn network_url(&self) -> url::Url {
