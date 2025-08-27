@@ -12,11 +12,21 @@ function log {
     echo "[$(date '+%F %T')] $*"
 }
 
+# Determine backend from WORKSPACE
+WORKSPACE="${WORKSPACE:-}"
+case "${WORKSPACE}" in
+    testnet) BACKEND="production" ;;
+    testnet-dev) BACKEND="dev" ;;
+    testnet-staging) BACKEND="staging" ;;
+    ""|*) BACKEND="local" ;;
+esac
+log "WORKSPACE='${WORKSPACE:-<unset>}' -> backend='${BACKEND}'"
+
 function clear_db() {
     local db_root=$1
     mkdir -p "$db_root"
     log "Clearing DB at $db_root"
-    XDBG_DB_ROOT="$db_root" xdbg -d -b dev --clear || log "Clear failed"
+    XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" --clear || log "Clear failed"
     sleep 10
 }
 
@@ -24,8 +34,8 @@ function generate_identities() {
     local db_root=$1
     mkdir -p "$db_root"
     log "Generating identities at $db_root"
-    XDBG_DB_ROOT="$db_root" xdbg -d -b dev generate --entity identity --amount 10 --concurrency 1 \
-        || { log "Identity generation failed, clearing and retrying"; clear_db "$db_root"; XDBG_DB_ROOT="$db_root" xdbg -d -b dev generate --entity identity --amount 10 --concurrency 1; }
+    XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity identity --amount 10 --concurrency 1 \
+        || { log "Identity generation failed, clearing and retrying"; clear_db "$db_root"; XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity identity --amount 10 --concurrency 1; }
 }
 
 function generate_groups_with_retry() {
@@ -37,7 +47,7 @@ function generate_groups_with_retry() {
         log "Sleeping 60 seconds before attempting group generation..."
         sleep 60
         log "Attempting group generation (attempt $((attempts + 1)))"
-        if XDBG_DB_ROOT="$db_root" xdbg -d -b dev generate --entity group --amount 1 --concurrency 1; then
+        if XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity group --amount 1 --concurrency 1; then
             return 0
         else
             log "Group generation failed. Clearing DB and retrying..."
@@ -74,7 +84,7 @@ function run_long_test() {
     mkdir -p "$db_root"
     log "Starting long-running $entity test with DB at $db_root"
     while true; do
-        if ! XDBG_DB_ROOT="$db_root" xdbg -d -b dev generate --entity "$entity" --amount 99999 --concurrency 1 &> "$log_file"; then
+        if ! XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity "$entity" --amount 99999 --concurrency 1 &> "$log_file"; then
             log "$entity test failed. Resetting DB and retrying..."
             clear_db "$db_root"
             setup_data "$db_root" "$entity"
