@@ -118,9 +118,6 @@ impl GenerateGroups {
         let skip_sleep = std::env::var("XDBG_SKIP_SLEEP")
             .map(|v| v.eq_ignore_ascii_case("TRUE"))
             .unwrap_or(false);
-        let verify_group = std::env::var("XDBG_VERIFY_GROUP")
-            .map(|v| v.eq_ignore_ascii_case("TRUE"))
-            .unwrap_or(false);
         let dump_groups = std::env::var("XDBG_DUMP_GROUPS")
             .map(|v| v.eq_ignore_ascii_case("TRUE"))
             .unwrap_or(false);
@@ -270,42 +267,67 @@ impl GenerateGroups {
                 );
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
+                // -------- read_group_sync_latency (node read) --------
+                let read_sync_start = Instant::now();
+                let _ = group.sync_with_conn().await;
+                let read_sync_secs = read_sync_start.elapsed().as_secs_f64();
+                record_latency("read_group_sync_latency", read_sync_secs);
+                record_throughput("read_group_sync_latency");
+                csv_metric(
+                    "latency_seconds",
+                    "read_group_sync_latency",
+                    read_sync_secs,
+                    &[("phase", "post_add_members_sync")],
+                );
+                push_metrics("xdbg_debug", "http://localhost:9091");
+
                 // -------- optional reader-side verification with polling --------
-                if verify_group {
-                    let invitee_identity = &invitees_vec[0];
-                    let reader = app::client_from_identity(invitee_identity, &network).await?;
-                    let gid_for_reader = group.group_id.clone().into();
+                let invitee_identity = &invitees_vec[0];
+                let reader = app::client_from_identity(invitee_identity, &network).await?;
+                let gid_for_reader = group.group_id.clone().into();
 
-                    let verify_timeout = Duration::from_secs(15);
-                    let poll_every = Duration::from_millis(200);
-                    let deadline = tokio::time::Instant::now() + verify_timeout;
+                let verify_timeout = Duration::from_secs(15);
+                let poll_every = Duration::from_millis(200);
+                let deadline = tokio::time::Instant::now() + verify_timeout;
 
-                    let mut visible = false;
-                    while tokio::time::Instant::now() < deadline {
-                        let _ = reader.sync_welcomes().await;
-                        match reader.group(&gid_for_reader) {
-                            Ok(g2) => {
-                                if g2.sync_with_conn().await.is_ok() {
-                                    visible = true;
-                                    break;
-                                }
-                            }
-                            Err(_) => {
-                                // not visible yet; keep polling
+                let vis_loop_start = Instant::now();
+                let mut visible = false;
+                while tokio::time::Instant::now() < deadline {
+                    let _ = reader.sync_welcomes().await;
+                    match reader.group(&gid_for_reader) {
+                        Ok(g2) => {
+                            if g2.sync_with_conn().await.is_ok() {
+                                visible = true;
+                                break;
                             }
                         }
-                        if !skip_sleep {
-                            sleep(poll_every).await;
+                        Err(_) => {
                         }
                     }
-
-                    csv_metric(
-                        "event",
-                        "group_member_visible",
-                        if visible { 1.0 } else { 0.0 },
-                        &[("member_0", &ids[0]), ("group_id", &gid_hex)],
-                    );
+                    if !skip_sleep {
+                        sleep(poll_every).await;
+                    }
                 }
+                let vis_loop_secs = vis_loop_start.elapsed().as_secs_f64();
+                record_latency("read_member_visibility", vis_loop_secs);
+                record_throughput("read_member_visibility");
+                csv_metric(
+                    "latency_seconds",
+                    "read_member_visibility",
+                    vis_loop_secs,
+                    &[
+                        ("phase", "post_add_members_visibility"),
+                        ("success", if visible { "true" } else { "false" }),
+                    ],
+                );
+                push_metrics("xdbg_debug", "http://localhost:9091");
+
+                csv_metric(
+                    "event",
+                    "group_member_visible",
+                    if visible { 1.0 } else { 0.0 },
+                    &[("member_0", &ids[0]), ("group_id", &gid_hex)],
+                );
 
                 bar_pointer.inc(1);
 

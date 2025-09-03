@@ -194,6 +194,22 @@ impl GenerateIdentity {
                 );
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
+                let read_start = Instant::now();
+                let _ = tmp
+                    .identity_updates()
+                    .get_latest_association_state(&conn, &id_hex)
+                    .await?;
+                let read_secs = read_start.elapsed().as_secs_f64();
+                record_latency("read_identity_lookup_latency", read_secs);
+                record_throughput("read_identity_lookup_latency");
+                csv_metric(
+                    "latency_seconds",
+                    "read_identity_lookup_latency",
+                    read_secs,
+                    &[("phase", "identity_read"), ("version", &version)],
+                );
+                push_metrics("xdbg_debug", "http://localhost:9091");
+
                 bar_pointer.inc(1);
                 Ok(identity)
             });

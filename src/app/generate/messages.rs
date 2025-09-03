@@ -13,6 +13,8 @@ use rand::{Rng, SeedableRng, rngs::SmallRng, seq::SliceRandom};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use xmtp_mls::groups::summary::SyncSummary;
+use futures::StreamExt;
+use tokio::time::timeout;
 
 mod content_type;
 
@@ -212,6 +214,95 @@ impl GenerateMessages {
             );
 
             crate::metrics::push_metrics("xdbg_debug", "http://localhost:9091");
+
+            // read-path: pick a different member to observe reads
+            if let Some(reader_inbox) = group.members.iter().find(|m| **m != *inbox_id).cloned() {
+                let reader_identity = identity_store
+                    .get((u64::from(&network), reader_inbox).into())?
+                    .ok_or_else(|| eyre!("reader identity not found"))?;
+                let reader = app::client_from_identity(&reader_identity, &network).await?;
+                reader.sync_welcomes().await?;
+                let r_group = reader.group(&group.group_id.into())?;
+
+                // read_group_sync_after_send
+                let read_sync_start = std::time::Instant::now();
+                let _ = r_group.sync_with_conn().await?;
+                let read_sync_secs = read_sync_start.elapsed().as_secs_f64();
+                crate::metrics::record_latency("read_group_sync_after_send", read_sync_secs);
+                crate::metrics::record_throughput("read_group_sync_after_send");
+                csv_metric(
+                    "latency_seconds",
+                    "read_group_sync_after_send",
+                    read_sync_secs,
+                    &[("operation", "post_send_sync")],
+                );
+                crate::metrics::push_metrics("xdbg_debug", "http://localhost:9091");
+
+                // read_stream_time_to_first_event
+                let mut stream = reader.stream_all_messages(None, None).await?;
+                let ping_start = std::time::Instant::now();
+                let _ = group.send_message(&content_type::new_message("ping")).await?;
+                let got = timeout(Duration::from_secs(10), stream.next())
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some();
+                let ttf_secs = ping_start.elapsed().as_secs_f64();
+                crate::metrics::record_latency("read_stream_time_to_first_event", ttf_secs);
+                crate::metrics::record_throughput("read_stream_time_to_first_event");
+                csv_metric(
+                    "latency_seconds",
+                    "read_stream_time_to_first_event",
+                    ttf_secs,
+                    &[("operation", "stream_first_event"), ("success", if got { "true" } else { "false" })],
+                );
+                crate::metrics::push_metrics("xdbg_debug", "http://localhost:9091");
+
+                // identity update publish and reader observation
+                let pub_start = std::time::Instant::now();
+                let _ = group.maybe_update_installations(None).await?;
+                let pub_secs = pub_start.elapsed().as_secs_f64();
+                crate::metrics::record_latency("identity_update_publish_latency", pub_secs);
+                crate::metrics::record_throughput("identity_update_publish_latency");
+                csv_metric(
+                    "latency_seconds",
+                    "identity_update_publish_latency",
+                    pub_secs,
+                    &[("operation", "identity_update_publish")],
+                );
+                crate::metrics::push_metrics("xdbg_debug", "http://localhost:9091");
+
+                let sync_i_start = std::time::Instant::now();
+                let _ = reader.sync_welcomes().await?;
+                let sync_i_secs = sync_i_start.elapsed().as_secs_f64();
+                crate::metrics::record_latency("read_identity_sync_after_publish", sync_i_secs);
+                crate::metrics::record_throughput("read_identity_sync_after_publish");
+                csv_metric(
+                    "latency_seconds",
+                    "read_identity_sync_after_publish",
+                    sync_i_secs,
+                    &[("operation", "identity_update_sync")],
+                );
+                crate::metrics::push_metrics("xdbg_debug", "http://localhost:9091");
+
+                let sender_hex = hex::encode(identity.inbox_id);
+                let reader_conn = reader.store().db();
+                let lookup_start = std::time::Instant::now();
+                let _ = reader
+                    .identity_updates()
+                    .get_latest_association_state(&reader_conn, &sender_hex)
+                    .await?;
+                let lookup_secs = lookup_start.elapsed().as_secs_f64();
+                crate::metrics::record_latency("read_identity_lookup_after_update_publish", lookup_secs);
+                crate::metrics::record_throughput("read_identity_lookup_after_update_publish");
+                csv_metric(
+                    "latency_seconds",
+                    "read_identity_lookup_after_update_publish",
+                    lookup_secs,
+                    &[("operation", "identity_update_lookup")],
+                );
+                crate::metrics::push_metrics("xdbg_debug", "http://localhost:9091");
+            }
 
             if !skip_sleep {
                 sleep(Duration::from_secs(60)).await;
