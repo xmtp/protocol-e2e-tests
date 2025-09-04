@@ -184,16 +184,16 @@ impl GenerateMessages {
             ))?;
             let client = app::client_from_identity(&identity, &network).await?;
             client.sync_welcomes().await?;
-            let group = client.group(&group.id.into())?;
-            group.sync_with_conn().await?;
-            group.maybe_update_installations(None).await?;
+            let live_group = client.group(&group.id.into())?;
+            live_group.sync_with_conn().await?;
+            live_group.maybe_update_installations(None).await?;
 
             let words = rng.gen_range(0..*max_message_size);
             let words = lipsum::lipsum_words_with_rng(&mut *rng, words as usize);
             let message = content_type::new_message(words);
 
             let start = std::time::Instant::now();
-            group.send_message(&message).await?;
+            live_group.send_message(&message).await?;
             let elapsed = start.elapsed().as_secs_f64();
 
             crate::metrics::record_latency("send_message", elapsed);
@@ -220,7 +220,9 @@ impl GenerateMessages {
                     .ok_or_else(|| eyre!("reader identity not found"))?;
                 let reader = app::client_from_identity(&reader_identity, &network).await?;
                 reader.sync_welcomes().await?;
-                let r_group = reader.group(&group.group_id.into())?;
+
+                let gid_for_reader = live_group.group_id.clone().into();
+                let r_group = reader.group(&gid_for_reader)?;
 
                 let read_sync_start = std::time::Instant::now();
                 let _ = r_group.sync_with_conn().await?;
@@ -236,7 +238,7 @@ impl GenerateMessages {
                 crate::metrics::push_metrics("xdbg_debug", "http://localhost:9091");
 
                 let pub_start = std::time::Instant::now();
-                let _ = group.maybe_update_installations(None).await?;
+                let _ = live_group.maybe_update_installations(None).await?;
                 let pub_secs = pub_start.elapsed().as_secs_f64();
                 crate::metrics::record_latency("identity_update_publish_latency", pub_secs);
                 crate::metrics::record_throughput("identity_update_publish_latency");
