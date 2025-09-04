@@ -287,7 +287,7 @@ impl GenerateGroups {
                 let gid_for_reader = group.group_id.clone().into();
 
                 let verify_timeout = Duration::from_secs(15);
-                let poll_every = Duration::from_millis(200);
+                let poll_every = Duration::from_millis(10);
                 let deadline = tokio::time::Instant::now() + verify_timeout;
 
                 let vis_loop_start = Instant::now();

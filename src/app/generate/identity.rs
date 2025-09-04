@@ -11,7 +11,6 @@ use tokio::time::{sleep, Duration};
 
 use crate::metrics::{record_latency, record_throughput, push_metrics};
 
-/// Identity Generation
 pub struct GenerateIdentity {
     identity_store: IdentityStore<'static>,
     network: args::BackendOpts,
@@ -35,11 +34,6 @@ impl GenerateIdentity {
             .map(|i| i.map(|i| Ok(i.value()))))
     }
 
-    /// Create identities if they don't already exist.
-    /// creates specified `identities` on the
-    /// gRPC local docker or development node and saves them to a file.
-    /// `identities.generated`/`dev-identities.generated`. Uses this file for subsequent runs if
-    /// node still has those identities.
     #[allow(unused)]
     pub async fn create_identities_if_dont_exist(
         &self,
@@ -55,7 +49,6 @@ impl GenerateIdentity {
                 .get_latest_association_state(&connection, &hex::encode(first.inbox_id))
                 .await?;
             info!("Found generated identities, checking for registration on backend...",);
-            // we assume that if the first identity is registered, they all are
             if !state.members().is_empty() {
                 return identities.collect::<Result<Vec<Identity>, _>>();
             } else {
@@ -191,6 +184,19 @@ impl GenerateIdentity {
                         ("version", &version),
                         ("success", if assoc_ready { "true" } else { "false" }),
                     ],
+                );
+                push_metrics("xdbg_debug", "http://localhost:9091");
+
+                let read_sync_start = Instant::now();
+                let _ = tmp.sync_welcomes().await?;
+                let read_sync_secs = read_sync_start.elapsed().as_secs_f64();
+                record_latency("identity_read_sync_latency", read_sync_secs);
+                record_throughput("identity_read_sync_latency");
+                csv_metric(
+                    "latency_seconds",
+                    "identity_read_sync_latency",
+                    read_sync_secs,
+                    &[("phase", "identity_read_sync"), ("version", &version)],
                 );
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
