@@ -338,8 +338,8 @@ impl GenerateGroups {
                     .collect::<Vec<InboxId>>();
                 members.push(identity.inbox_id);
 
-                if !skip_sleep {
-                    sleep(Duration::from_secs(60)).await;
+                if let Some(secs) = std::env::var("XDBG_COOLDOWN_SLEEP").ok().and_then(|s| s.parse::<u64>().ok()) {
+                    std::thread::sleep(std::time::Duration::from_secs(secs));
                 }
 
                 Ok(Group {

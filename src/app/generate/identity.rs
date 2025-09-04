@@ -288,6 +288,11 @@ impl GenerateIdentity {
             }
             bail!("Error generation failed");
         }
+
+        if let Some(secs) = std::env::var("XDBG_COOLDOWN_SLEEP").ok().and_then(|s| s.parse::<u64>().ok()) {
+            std::thread::sleep(std::time::Duration::from_secs(secs));
+        }
+
         Ok(identities)
     }
 }

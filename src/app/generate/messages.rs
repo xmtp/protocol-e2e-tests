@@ -282,8 +282,8 @@ impl GenerateMessages {
                 crate::metrics::push_metrics("xdbg_debug", "http://localhost:9091");
             }
 
-            if !skip_sleep {
-                sleep(Duration::from_secs(60)).await;
+            if let Some(secs) = std::env::var("XDBG_COOLDOWN_SLEEP").ok().and_then(|s| s.parse::<u64>().ok()) {
+                std::thread::sleep(std::time::Duration::from_secs(secs));
             }
 
             Ok(())
