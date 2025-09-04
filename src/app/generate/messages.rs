@@ -13,8 +13,6 @@ use rand::{Rng, SeedableRng, rngs::SmallRng, seq::SliceRandom};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use xmtp_mls::groups::summary::SyncSummary;
-use futures::StreamExt;
-use tokio::time::timeout;
 
 mod content_type;
 
@@ -175,7 +173,8 @@ impl GenerateMessages {
         if let Some(inbox_id) = group.members.choose(rng) {
             let key = (u64::from(&network), *inbox_id);
 
-            // each identity can only be used by one worker thread
+            let reader_inbox_opt = group.members.iter().find(|m| **m != *inbox_id).cloned();
+
             let identity_lock = get_identity_lock(inbox_id)?;
             let _lock_guard = identity_lock.lock().await;
 
@@ -215,8 +214,7 @@ impl GenerateMessages {
 
             crate::metrics::push_metrics("xdbg_debug", "http://localhost:9091");
 
-            // read-path: pick a different member to observe reads
-            if let Some(reader_inbox) = group.members.iter().find(|m| **m != *inbox_id).cloned() {
+            if let Some(reader_inbox) = reader_inbox_opt {
                 let reader_identity = identity_store
                     .get((u64::from(&network), reader_inbox).into())?
                     .ok_or_else(|| eyre!("reader identity not found"))?;
@@ -224,7 +222,6 @@ impl GenerateMessages {
                 reader.sync_welcomes().await?;
                 let r_group = reader.group(&group.group_id.into())?;
 
-                // read_group_sync_after_send
                 let read_sync_start = std::time::Instant::now();
                 let _ = r_group.sync_with_conn().await?;
                 let read_sync_secs = read_sync_start.elapsed().as_secs_f64();
@@ -238,27 +235,6 @@ impl GenerateMessages {
                 );
                 crate::metrics::push_metrics("xdbg_debug", "http://localhost:9091");
 
-                // read_stream_time_to_first_event
-                let mut stream = reader.stream_all_messages(None, None).await?;
-                let ping_start = std::time::Instant::now();
-                let _ = group.send_message(&content_type::new_message("ping")).await?;
-                let got = timeout(Duration::from_secs(10), stream.next())
-                    .await
-                    .ok()
-                    .flatten()
-                    .is_some();
-                let ttf_secs = ping_start.elapsed().as_secs_f64();
-                crate::metrics::record_latency("read_stream_time_to_first_event", ttf_secs);
-                crate::metrics::record_throughput("read_stream_time_to_first_event");
-                csv_metric(
-                    "latency_seconds",
-                    "read_stream_time_to_first_event",
-                    ttf_secs,
-                    &[("operation", "stream_first_event"), ("success", if got { "true" } else { "false" })],
-                );
-                crate::metrics::push_metrics("xdbg_debug", "http://localhost:9091");
-
-                // identity update publish and reader observation
                 let pub_start = std::time::Instant::now();
                 let _ = group.maybe_update_installations(None).await?;
                 let pub_secs = pub_start.elapsed().as_secs_f64();
