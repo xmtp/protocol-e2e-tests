@@ -318,7 +318,11 @@ where
             .await;
         if let Ok(map) = kp_map {
             if let Some(Ok(kp)) = map.get(&installation_id).cloned() {
-                let now = xmtp_common::time::now_ns();
+                let ns = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                let now: u64 = u64::try_from(ns).unwrap_or(u64::MAX);
                 let valid_now = kp.life_time().map(|l| l.not_before <= now && now <= l.not_after).unwrap_or(true);
                 if valid_now {
                     return Ok(());

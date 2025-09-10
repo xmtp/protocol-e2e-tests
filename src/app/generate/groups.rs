@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use crate::metrics::{record_latency, record_throughput, record_member_count, push_metrics};
 use xmtp_db::XmtpDb;
-use xmtp_mls::{client::Client as XmtpClient, verified_key_package_v2::VerifiedKeyPackageV2, XmtpApi};
+use xmtp_mls::{client::Client as XmtpClient, XmtpApi};
 
 pub struct GenerateGroups {
     group_store: GroupStore<'static>,
@@ -425,7 +425,11 @@ where
         .get_key_packages_for_installation_ids(installation_ids)
         .await?;
 
-    let now = xmtp_common::time::now_ns();
+    let ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let now: u64 = u64::try_from(ns).unwrap_or(u64::MAX);
     let mut any_available = false;
     for (installation_id, res) in kp_map.into_iter() {
         let inst_hex = hex::encode(&installation_id);
