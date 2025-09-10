@@ -10,6 +10,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use crate::metrics::{record_latency, record_throughput, record_member_count, push_metrics};
+use xmtp_db::XmtpDb;
+use xmtp_mls::{client::Client as XmtpClient, verified_key_package_v2::VerifiedKeyPackageV2, XmtpApi};
 
 pub struct GenerateGroups {
     group_store: GroupStore<'static>,
@@ -157,11 +159,23 @@ impl GenerateGroups {
                 debug!(address = identity.address(), "group owner");
                 let client = app::client_from_identity(&identity, &network).await?;
 
-                // Build member list to add (hex inbox ids)
-                let ids = invitees_vec
-                    .iter()
-                    .map(|i| hex::encode(i.inbox_id))
-                    .collect::<Vec<_>>();
+                // Filter invitees synchronously (sequentially) by key package availability and print status
+                let mut ids: Vec<String> = Vec::new();
+                for inv in &invitees_vec {
+                    let inbox_hex = hex::encode(&inv.inbox_id);
+                    match check_and_log_key_packages(&client, &inbox_hex).await {
+                        Ok(true) => ids.push(inbox_hex),
+                        Ok(false) => {
+                            println!("kp_check inbox={} available=false", inbox_hex);
+                        }
+                        Err(e) => {
+                            println!("kp_check inbox={} error={}", inbox_hex, e);
+                        }
+                    }
+                }
+                if ids.is_empty() {
+                    return Err(eyre::eyre!("no eligible invitees with key packages"));
+                }
 
                 // -------- group_create_client_only (sync, local) --------
                 let flow_start = Instant::now(); // total create-with-members KPI starts here
@@ -381,4 +395,61 @@ impl GenerateGroups {
 
         Ok(groups)
     }
+}
+
+// ----------------------------
+// Key package check helper (sequential)
+// ----------------------------
+async fn check_and_log_key_packages<ApiClient, Db>(
+    client: &XmtpClient<ApiClient, Db>,
+    inbox_id: &str,
+) -> Result<bool>
+where
+    ApiClient: XmtpApi,
+    Db: XmtpDb,
+{
+    // Load latest association state and list installation IDs
+    let states = client.inbox_addresses(true, vec![inbox_id]).await?;
+    let Some(state) = states.into_iter().next() else {
+        println!("kp_check inbox={} state=missing", inbox_id);
+        return Ok(false);
+    };
+
+    let installation_ids = state.installation_ids();
+    if installation_ids.is_empty() {
+        println!("kp_check inbox={} installations=0", inbox_id);
+        return Ok(false);
+    }
+
+    let kp_map = client
+        .get_key_packages_for_installation_ids(installation_ids)
+        .await?;
+
+    let now = xmtp_common::time::now_ns();
+    let mut any_available = false;
+    for (installation_id, res) in kp_map.into_iter() {
+        let inst_hex = hex::encode(&installation_id);
+        match res {
+            Ok(kp) => {
+                let lifetime = kp.life_time();
+                let (nb, na, valid_now) = match lifetime {
+                    Some(l) => (Some(l.not_before), Some(l.not_after), l.not_before <= now && now <= l.not_after),
+                    None => (None, None, true),
+                };
+                println!(
+                    "kp_installation inbox={} id={} status=ok not_before={:?} not_after={:?} valid_now={}",
+                    inbox_id, inst_hex, nb, na, valid_now
+                );
+                if valid_now { any_available = true; }
+            }
+            Err(e) => {
+                println!(
+                    "kp_installation inbox={} id={} status=invalid error={}",
+                    inbox_id, inst_hex, e
+                );
+            }
+        }
+    }
+
+    Ok(any_available)
 }

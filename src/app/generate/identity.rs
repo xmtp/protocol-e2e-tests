@@ -10,6 +10,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use tokio::time::{sleep, Duration};
 
 use crate::metrics::{record_latency, record_throughput, push_metrics};
+use xmtp_mls::XmtpApi;
 
 pub struct GenerateIdentity {
     identity_store: IdentityStore<'static>,
@@ -115,6 +116,8 @@ impl GenerateIdentity {
                 let wallet = crate::app::generate_wallet();
                 let register_start = Instant::now();
                 let user = app::new_registered_client(network.clone(), Some(&wallet)).await?;
+                // Ensure initial key package is published and retrievable before proceeding
+                wait_for_initial_key_package(&user, Duration::from_secs(20), Duration::from_millis(200)).await?;
                 let register_secs = register_start.elapsed().as_secs_f64();
 
                 record_latency(&format!("identity_register_{}", version), register_secs);
@@ -295,6 +298,38 @@ impl GenerateIdentity {
 
         Ok(identities)
     }
+}
+
+// Wait until the user's installation has a retrievable, valid key package
+async fn wait_for_initial_key_package<ApiClient, Db>(
+    user: &xmtp_mls::Client<ApiClient, Db>,
+    timeout: Duration,
+    poll_every: Duration,
+) -> Result<()>
+where
+    ApiClient: XmtpApi,
+    Db: xmtp_db::XmtpDb,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+    let installation_id = user.installation_public_key().to_vec();
+    while tokio::time::Instant::now() < deadline {
+        let kp_map = user
+            .get_key_packages_for_installation_ids(vec![installation_id.clone()])
+            .await;
+        if let Ok(map) = kp_map {
+            if let Some(Ok(kp)) = map.get(&installation_id).cloned() {
+                let now = xmtp_common::time::now_ns();
+                let valid_now = kp.life_time().map(|l| l.not_before <= now && now <= l.not_after).unwrap_or(true);
+                if valid_now {
+                    return Ok(());
+                }
+            }
+        }
+        if poll_every.as_millis() > 0 {
+            tokio::time::sleep(poll_every).await;
+        }
+    }
+    Err(eyre::eyre!("timed out waiting for initial key package"))
 }
 
 fn now_unix_ms() -> u128 {
