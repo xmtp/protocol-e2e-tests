@@ -117,7 +117,20 @@ impl GenerateIdentity {
                 let register_start = Instant::now();
                 let user = app::new_registered_client(network.clone(), Some(&wallet)).await?;
                 // Ensure initial key package is published and retrievable before proceeding
-                wait_for_initial_key_package(&user, Duration::from_secs(20), Duration::from_millis(200)).await?;
+                let kp_timeout_secs = std::env::var("XDBG_KP_TIMEOUT_SECS")
+                    .ok()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(60);
+                let kp_poll_ms = std::env::var("XDBG_KP_POLL_MS")
+                    .ok()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(200);
+                wait_for_initial_key_package(
+                    &user,
+                    Duration::from_secs(kp_timeout_secs),
+                    Duration::from_millis(kp_poll_ms),
+                )
+                .await?;
                 let register_secs = register_start.elapsed().as_secs_f64();
 
                 record_latency(&format!("identity_register_{}", version), register_secs);
@@ -312,6 +325,13 @@ where
 {
     let deadline = tokio::time::Instant::now() + timeout;
     let installation_id = user.installation_public_key().to_vec();
+    println!(
+        "kp_wait start inbox={} installation_id={} timeout_secs={} poll_ms={}",
+        user.inbox_id(),
+        hex::encode(&installation_id),
+        timeout.as_secs(),
+        poll_every.as_millis()
+    );
     while tokio::time::Instant::now() < deadline {
         let kp_map = user
             .get_key_packages_for_installation_ids(vec![installation_id.clone()])
@@ -333,6 +353,11 @@ where
             tokio::time::sleep(poll_every).await;
         }
     }
+    println!(
+        "kp_wait timeout inbox={} installation_id={}",
+        user.inbox_id(),
+        hex::encode(&installation_id)
+    );
     Err(eyre::eyre!("timed out waiting for initial key package"))
 }
 
