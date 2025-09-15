@@ -11,15 +11,6 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use crate::metrics::{record_latency, record_throughput, record_member_count, push_metrics};
-use xmtp_db::XmtpDb;
-use xmtp_mls::{client::Client as XmtpClient, XmtpApi};
-
-pub struct GenerateGroups {
-    group_store: GroupStore<'static>,
-    identity_store: IdentityStore<'static>,
-    // metadata_store: MetadataStore<'static>,
-    network: args::BackendOpts,
-}
 
 // ----------------------------
 // CSV helpers
@@ -46,6 +37,13 @@ fn csv_metric(metric_kind: &str, metric_name: &str, value: f64, labels: &[(&str,
             .join(";")
     };
     println!("{},{},{:.6},{},{}", metric_kind, metric_name, value, ts, labels_str);
+}
+
+pub struct GenerateGroups {
+    group_store: GroupStore<'static>,
+    identity_store: IdentityStore<'static>,
+    // metadata_store: MetadataStore<'static>,
+    network: args::BackendOpts,
 }
 
 impl GenerateGroups {
@@ -109,7 +107,6 @@ impl GenerateGroups {
         );
         let bar = ProgressBar::new(n as u64).with_style(style.unwrap());
         let mut set: tokio::task::JoinSet<Result<_, eyre::Error>> = tokio::task::JoinSet::new();
-        let mut handles = vec![];
 
         let network = &self.network;
         let mut rng = rand::thread_rng();
@@ -118,9 +115,6 @@ impl GenerateGroups {
 
         // ENV toggles
         let skip_sleep = std::env::var("XDBG_SKIP_SLEEP")
-            .map(|v| v.eq_ignore_ascii_case("TRUE"))
-            .unwrap_or(false);
-        let dump_groups = std::env::var("XDBG_DUMP_GROUPS")
             .map(|v| v.eq_ignore_ascii_case("TRUE"))
             .unwrap_or(false);
 
@@ -135,7 +129,7 @@ impl GenerateGroups {
             let bar_pointer = bar.clone();
             let network = network.clone();
             let semaphore = semaphore.clone();
-            handles.push(set.spawn(async move {
+            set.spawn(async move {
                 let _permit = semaphore.acquire().await?;
                 let identity_lock = get_identity_lock(&identity.inbox_id)?;
                 let _lock_guard = identity_lock.lock().await;
@@ -265,7 +259,7 @@ impl GenerateGroups {
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
                 // -------- optional reader-side verification with polling --------
-                let invitee_identity = &invitees_vec[0];
+                let invitee_identity = &invitees[0];
                 let reader = app::client_from_identity(invitee_identity, &network).await?;
                 let gid_for_reader = group.group_id.clone().into();
 
@@ -284,8 +278,7 @@ impl GenerateGroups {
                                 break;
                             }
                         }
-                        Err(_) => {
-                        }
+                        Err(_) => {}
                     }
                     if !skip_sleep {
                         sleep(poll_every).await;
@@ -360,7 +353,17 @@ impl GenerateGroups {
                 }
             }
         }
+
         self.group_store.set_all(groups.as_slice(), &self.network)?;
+
+        // Conditionally dump a human-readable view of the persisted groups
+        if std::env::var("XDBG_DUMP_GROUPS")
+            .map(|v| v.eq_ignore_ascii_case("TRUE"))
+            .unwrap_or(false)
+        {
+            let _ = self.dump_groups_human();
+        }
+
         Ok(groups)
     }
 }
