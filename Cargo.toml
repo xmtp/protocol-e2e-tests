@@ -29,7 +29,7 @@ lipsum = "0.9"
 miniserde = "0.1"
 num_cpus = "1.16.0"
 openmls.workspace = true
-owo-colors.workspace = true
+owo-colors = "3"
 prost.workspace = true
 rand = { workspace = true, features = ["small_rng"] }
 redb = "2.6"
