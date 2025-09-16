@@ -36,6 +36,7 @@ pub enum Commands {
     Modify(Modify),
     Inspect(Inspect),
     Send(Send),
+    #[command(subcommand)]
     Query(Query),
     Info(InfoOpts),
     Export(ExportOpts),
@@ -132,8 +133,29 @@ pub enum InspectionKind {
 }
 
 /// Query for Information about a Group or Message or User
-#[derive(Args, Debug)]
-pub struct Query {}
+#[derive(Subcommand, Debug, Clone)]
+pub enum Query {
+    Identity(Identity),
+    FetchKeyPackages(FetchKeyPackages),
+    BatchQueryCommitLog(BatchQueryCommitLog),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct Identity {
+    pub inbox_id: InboxId,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct FetchKeyPackages {
+    pub installation_keys: Vec<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct BatchQueryCommitLog {
+    pub group_ids: Vec<String>,
+    #[arg(long)]
+    pub skip_unspecified: bool,
+}
 
 /// Print information about the local generated state
 #[derive(Args, Debug)]
@@ -276,7 +298,8 @@ impl BackendOpts {
         } else {
             trace!(url = %network, is_secure, "create grpc");
             Ok(Arc::new(
-                crate::GrpcClient::create(network.as_str().to_string(), is_secure).await?,
+                crate::GrpcClient::create(network.as_str().to_string(), is_secure, None::<String>)
+                    .await?,
             ))
         }
     }
@@ -377,7 +400,7 @@ mod tests {
             "--url",
             "http://localhost:5050",
             "--payer-url",
-            "http://localhost:5050",
+            "http://localhost:5052",
         ]);
         assert!(opts.is_ok());
     }
@@ -391,7 +414,7 @@ mod tests {
     #[test]
     fn backend_and_payer_url_is_invalid() {
         let opts =
-            parse_backend_args(&["--backend", "local", "--payer-url", "http://localhost:5050"]);
+            parse_backend_args(&["--backend", "local", "--payer-url", "http://localhost:5052"]);
         assert!(opts.is_err());
     }
 
@@ -403,7 +426,7 @@ mod tests {
 
     #[test]
     fn payer_url_only_is_valid_but_maybe_warning() {
-        let opts = parse_backend_args(&["--payer-url", "http://localhost:5050"]);
+        let opts = parse_backend_args(&["--payer-url", "http://localhost:5052"]);
         assert!(opts.is_ok());
     }
 
@@ -415,7 +438,7 @@ mod tests {
             "--url",
             "http://localhost:5050",
             "--payer-url",
-            "http://localhost:5050",
+            "http://localhost:5052",
         ]);
         assert!(opts.is_err());
     }
