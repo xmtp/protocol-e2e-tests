@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+: "${XDBG_LOOP_PAUSE:=300}" # set the default interval between requests to 5min
+
 MESSAGE_DB=xdbg-message-db
 GROUP_DB=xdbg-group-db
 
