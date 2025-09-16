@@ -11,6 +11,7 @@ use tokio::time::{sleep, Duration};
 
 use crate::metrics::{record_latency, record_throughput, push_metrics};
 
+/// Identity Generation
 pub struct GenerateIdentity {
     identity_store: IdentityStore<'static>,
     network: args::BackendOpts,
@@ -34,13 +35,18 @@ impl GenerateIdentity {
             .map(|i| i.map(|i| Ok(i.value()))))
     }
 
+    /// Create identities if they don't already exist.
+    /// creates specified `identities` on the
+    /// gRPC local docker or development node and saves them to a file.
+    /// `identities.generated`/`dev-identities.generated`. Uses this file for subsequent runs if
+    /// node still has those identities.
     #[allow(unused)]
     pub async fn create_identities_if_dont_exist(
         &self,
         n: usize,
         client: &crate::DbgClient,
     ) -> Result<Vec<Identity>> {
-        let connection = client.store().db();
+        let connection = client.context.store().db();
         if let Some(mut identities) = self.load_identities()? {
             let first = identities.next().ok_or(eyre::eyre!("Does not exist"))??;
 
@@ -49,6 +55,7 @@ impl GenerateIdentity {
                 .get_latest_association_state(&connection, &hex::encode(first.inbox_id))
                 .await?;
             info!("Found generated identities, checking for registration on backend...",);
+            // we assume that if the first identity is registered, they all are
             if !state.members().is_empty() {
                 return identities.collect::<Result<Vec<Identity>, _>>();
             } else {
@@ -78,6 +85,7 @@ impl GenerateIdentity {
         let network = &self.network;
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
 
+        // Metrics/env toggles carried over
         let version = version_label();
         let skip_sleep = std::env::var("XDBG_SKIP_SLEEP")
             .map(|v| v.eq_ignore_ascii_case("TRUE"))
@@ -92,6 +100,7 @@ impl GenerateIdentity {
             set.spawn(async move {
                 let _permit = semaphore.acquire().await?;
 
+                // client init timing (temp client used to hit node)
                 let client_init_start = Instant::now();
                 let _tmp_client = app::temp_client(&network, None).await?;
                 let client_init_secs = client_init_start.elapsed().as_secs_f64();
@@ -112,6 +121,7 @@ impl GenerateIdentity {
                 );
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
+                // register timing
                 let wallet = crate::app::generate_wallet();
                 let register_start = Instant::now();
                 let user = app::new_registered_client(network.clone(), Some(&wallet)).await?;
@@ -135,8 +145,9 @@ impl GenerateIdentity {
 
                 let identity = Identity::from_libxmtp(user.identity(), wallet)?;
 
+                // association readiness polling (read-path test)
                 let tmp = Arc::new(app::temp_client(&network, None).await?);
-                let conn = Arc::new(tmp.store().db());
+                let conn = Arc::new(tmp.context.store().db());
                 let id_hex = hex::encode(identity.inbox_id);
 
                 let assoc_start = Instant::now();
@@ -187,6 +198,7 @@ impl GenerateIdentity {
                 );
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
+                // read sync latency (welcomes)
                 let read_sync_start = Instant::now();
                 let _ = tmp.sync_welcomes().await?;
                 let read_sync_secs = read_sync_start.elapsed().as_secs_f64();
@@ -200,6 +212,7 @@ impl GenerateIdentity {
                 );
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
+                // identity lookup read latency
                 let read_start = Instant::now();
                 let _ = tmp
                     .identity_updates()
@@ -220,15 +233,15 @@ impl GenerateIdentity {
                 Ok(identity)
             });
 
-            if set.len() == app::get_fdlimit() {
-                if let Some(identity) = set.join_next().await {
-                    match identity {
-                        Ok(identity) => {
-                            identities.push(identity?);
-                        }
-                        Err(e) => {
-                            error!("{}", e.to_string());
-                        }
+            if set.len() == app::get_fdlimit()
+                && let Some(identity) = set.join_next().await
+            {
+                match identity {
+                    Ok(identity) => {
+                        identities.push(identity?);
+                    }
+                    Err(e) => {
+                        error!("{}", e.to_string());
                     }
                 }
             }
@@ -251,8 +264,9 @@ impl GenerateIdentity {
         bar.finish();
         bar.reset();
         let mut set: tokio::task::JoinSet<Result<_, eyre::Error>> = tokio::task::JoinSet::new();
+        // ensure all the identities are registered
         let tmp = Arc::new(app::temp_client(network, None).await?);
-        let conn = Arc::new(tmp.store().db());
+        let conn = Arc::new(tmp.context.store().db());
         let bar_ref = bar.clone();
         let future = |inbox_id: [u8; 32]| async move {
             let id = hex::encode(inbox_id);
@@ -289,6 +303,7 @@ impl GenerateIdentity {
             bail!("Error generation failed");
         }
 
+        // Optional cooldown to dampen churn between test phases
         if let Some(secs) = std::env::var("XDBG_COOLDOWN_SLEEP").ok().and_then(|s| s.parse::<u64>().ok()) {
             std::thread::sleep(std::time::Duration::from_secs(secs));
         }
@@ -297,6 +312,9 @@ impl GenerateIdentity {
     }
 }
 
+// ----------------------------
+// CSV helpers + version label
+// ----------------------------
 fn now_unix_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

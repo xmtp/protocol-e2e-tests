@@ -1,13 +1,16 @@
+//! Group Generation
 use crate::app::identity_lock::get_identity_lock;
-use tokio::time::{sleep, Duration};
 use crate::app::{
     store::{Database, GroupStore, IdentityStore, RandomDatabase},
     types::*,
 };
 use crate::{app, args};
-use color_eyre::eyre::{self, Result};
+use color_eyre::eyre::{self, ContextCompat, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
+
+// added: timing + CSV helpers + metrics
+use tokio::time::{sleep, Duration};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use crate::metrics::{record_latency, record_throughput, record_member_count, push_metrics};
 
@@ -65,13 +68,17 @@ impl GenerateGroups {
 
     /// Human-readable dump of locally persisted groups (REDB).
     /// This reads what the generator saved after successful node ops.
+    #[allow(unused)]
     pub fn dump_groups_human(&self) -> eyre::Result<()> {
         let mut found = false;
         if let Some(iter) = self.load_groups()? {
             for g in iter {
                 let g = g?;
                 if !found {
-                    println!("=== Local GroupStore dump (network: {}) ===", url::Url::from(self.network.clone()));
+                    println!(
+                        "=== Local GroupStore dump (network: {}) ===",
+                        url::Url::from(self.network.clone())
+                    );
                     found = true;
                 }
                 println!(
@@ -86,26 +93,26 @@ impl GenerateGroups {
             }
         }
         if !found {
-            println!("(no groups in local store for {})", url::Url::from(self.network.clone()));
+            println!(
+                "(no groups in local store for {})",
+                url::Url::from(self.network.clone())
+            );
         }
         Ok(())
     }
 
-    /// Create n groups and always add at least one member so the test touches the node.
-    /// You can choose the member count via CLI invitees or env XDBG_FORCE_INVITEES=<N>.
     pub async fn create_groups(
         &self,
         n: usize,
         invitees: usize,
         concurrency: usize,
     ) -> Result<Vec<Group>> {
+        // TODO: Check if identities still exist
         let mut groups: Vec<Group> = Vec::with_capacity(n);
-
         let style = ProgressStyle::with_template(
             "{bar} {pos}/{len} elapsed {elapsed} remaining {eta_precise}",
         );
         let bar = ProgressBar::new(n as u64).with_style(style.unwrap());
-
         let mut set: tokio::task::JoinSet<Result<_, eyre::Error>> = tokio::task::JoinSet::new();
         let mut handles = vec![];
 
@@ -114,7 +121,7 @@ impl GenerateGroups {
 
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
 
-        // ENV toggles
+        // ENV toggles (added)
         let skip_sleep = std::env::var("XDBG_SKIP_SLEEP")
             .map(|v| v.eq_ignore_ascii_case("TRUE"))
             .unwrap_or(false);
@@ -122,17 +129,23 @@ impl GenerateGroups {
             .map(|v| v.eq_ignore_ascii_case("TRUE"))
             .unwrap_or(false);
 
-        // Member count selection
+        // Optional override for member count (added)
         let forced_invitees = std::env::var("XDBG_FORCE_INVITEES")
             .ok()
             .and_then(|s| s.parse::<usize>().ok());
         let invitee_count = forced_invitees.unwrap_or(invitees).max(1);
 
         for _ in 0..n {
-            let identity = self.identity_store.random(network, &mut rng)?.unwrap();
+            let identity = self
+                .identity_store
+                .random(network, &mut rng)?
+                .with_context(
+                    || "no local identities found in database, have identities been generated?",
+                )?;
 
-            // Get candidates, exclude the owner to avoid duplicates, then trim to invitee_count.
-            let mut invitees_vec = self.identity_store.random_n(network, &mut rng, invitee_count + 1)?;
+            // build invitee candidate list; avoid selecting the owner; ensure >=1 (added)
+            let mut invitees_vec =
+                self.identity_store.random_n(network, &mut rng, invitee_count + 1)?;
             invitees_vec.retain(|i| i.inbox_id != identity.inbox_id);
             if invitees_vec.is_empty() {
                 if let Some(other) = self.identity_store.random(network, &mut rng)? {
@@ -148,7 +161,6 @@ impl GenerateGroups {
             let bar_pointer = bar.clone();
             let network = network.clone();
             let semaphore = semaphore.clone();
-
             handles.push(set.spawn(async move {
                 let _permit = semaphore.acquire().await?;
                 let identity_lock = get_identity_lock(&identity.inbox_id)?;
@@ -156,8 +168,6 @@ impl GenerateGroups {
 
                 debug!(address = identity.address(), "group owner");
                 let client = app::client_from_identity(&identity, &network).await?;
-
-                // Build member list to add (hex inbox ids)
                 let ids = invitees_vec
                     .iter()
                     .map(|i| hex::encode(i.inbox_id))
@@ -169,7 +179,7 @@ impl GenerateGroups {
                 let group = client.create_group(Default::default(), Default::default())?;
                 let create_secs = create_start.elapsed().as_secs_f64();
 
-                // Print the created group id (human) and emit a CSV event
+                // Print the created group id (human) and emit a CSV event (added)
                 let gid_hex = hex::encode(&group.group_id);
                 let creator_hex = hex::encode(identity.inbox_id);
                 println!("group_created id={} created_by={}", gid_hex, creator_hex);
@@ -281,7 +291,7 @@ impl GenerateGroups {
                 );
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
-                // -------- optional reader-side verification with polling --------
+                // -------- optional reader-side verification with polling (added read-test) --------
                 let invitee_identity = &invitees_vec[0];
                 let reader = app::client_from_identity(invitee_identity, &network).await?;
                 let gid_for_reader = group.group_id.clone().into();
@@ -301,8 +311,7 @@ impl GenerateGroups {
                                 break;
                             }
                         }
-                        Err(_) => {
-                        }
+                        Err(_) => {}
                     }
                     if !skip_sleep {
                         sleep(poll_every).await;
@@ -338,6 +347,7 @@ impl GenerateGroups {
                     .collect::<Vec<InboxId>>();
                 members.push(identity.inbox_id);
 
+                // Optional cooldown (added)
                 if let Some(secs) = std::env::var("XDBG_COOLDOWN_SLEEP").ok().and_then(|s| s.parse::<u64>().ok()) {
                     std::thread::sleep(std::time::Duration::from_secs(secs));
                 }
@@ -353,12 +363,17 @@ impl GenerateGroups {
                 })
             }));
 
-            // throttle fanout: avoid too many concurrent tasks
-            if set.len() >= 64 {
-                if let Some(group) = set.join_next().await {
-                    match group {
-                        Ok(group) => groups.push(group?),
-                        Err(e) => error!("{}", e.to_string()),
+            // going above 128 we hit "unable to open database errors"
+            // This may be related to open file limits
+            if set.len() >= 64
+                && let Some(group) = set.join_next().await
+            {
+                match group {
+                    Ok(group) => {
+                        groups.push(group?);
+                    }
+                    Err(e) => {
+                        error!("{}", e.to_string());
                     }
                 }
             }
@@ -366,19 +381,19 @@ impl GenerateGroups {
 
         while let Some(group) = set.join_next().await {
             match group {
-                Ok(group) => groups.push(group?),
-                Err(e) => error!("{}", e.to_string()),
+                Ok(group) => {
+                    groups.push(group?);
+                }
+                Err(e) => {
+                    error!("{}", e.to_string());
+                }
             }
         }
-
-        // Persist locally only after successful ops
+        // Persist locally only after successful ops (kept) + optional human dump (added)
         self.group_store.set_all(groups.as_slice(), &self.network)?;
-
-        // Optional: dump local store for confirmation
         if dump_groups {
             let _ = self.dump_groups_human();
         }
-
         Ok(groups)
     }
 }
