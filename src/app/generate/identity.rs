@@ -85,10 +85,16 @@ impl GenerateIdentity {
         let network = &self.network;
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
 
+        // read pause once and pass into tasks
+        let loop_pause_secs = std::env::var("XDBG_LOOP_PAUSE")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok());
+
         for _ in 0..n {
             let bar_pointer = bar.clone();
             let network = network.clone();
             let semaphore = semaphore.clone();
+            let loop_pause_secs = loop_pause_secs; // copy into move closure
 
             set.spawn(async move {
                 let _permit = semaphore.acquire().await?;
@@ -220,6 +226,12 @@ impl GenerateIdentity {
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
                 bar_pointer.inc(1);
+
+                if let Some(secs) = loop_pause_secs {
+                    println!("Pausing for {}s after identity iteration", secs);
+                    sleep(Duration::from_secs(secs)).await;
+                }
+
                 Ok(identity)
             });
 
@@ -291,13 +303,6 @@ impl GenerateIdentity {
                 error!(err);
             }
             bail!("Error generation failed");
-        }
-
-        if let Some(secs) =
-            std::env::var("XDBG_LOOP_PAUSE").ok().and_then(|s| s.parse::<u64>().ok())
-        {
-            println!("Pausing for {}s after completing all identity operations", secs);
-            std::thread::sleep(std::time::Duration::from_secs(secs));
         }
 
         Ok(identities)

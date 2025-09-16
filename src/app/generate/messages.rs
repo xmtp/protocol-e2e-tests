@@ -14,7 +14,7 @@ use xmtp_mls::groups::summary::SyncSummary;
 
 // added for metrics + timing
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::time::{Duration};
+use tokio::time::{sleep, Duration};
 use crate::metrics::{record_latency, record_throughput, push_metrics};
 
 mod content_type;
@@ -85,6 +85,11 @@ impl GenerateMessages {
 
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
 
+        // Read once; apply per-message regardless of success/failure
+        let loop_pause_secs = std::env::var("XDBG_LOOP_PAUSE")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok());
+
         let mut set: tokio::task::JoinSet<Result<(), eyre::Error>> = tokio::task::JoinSet::new();
         for _ in 0..n {
             let bar_pointer = bar.clone();
@@ -92,11 +97,19 @@ impl GenerateMessages {
             let n = network.clone();
             let opts = opts.clone();
             let semaphore = semaphore.clone();
+            let loop_pause_secs = loop_pause_secs;
+
             set.spawn(async move {
                 let _permit = semaphore.acquire().await?;
-                Self::send_message(&d.clone().into(), &d.clone().into(), n, opts).await?;
+                let res = Self::send_message(&d.clone().into(), &d.clone().into(), n, opts).await;
                 bar_pointer.inc(1);
-                Ok(())
+                if let Some(secs) = loop_pause_secs {
+                    println!("Pausing for {}s after message iteration", secs);
+                    sleep(Duration::from_secs(secs)).await;
+                }
+
+                // Propagate original result
+                res.map_err(eyre::Report::from)
             });
         }
 
@@ -258,13 +271,6 @@ impl GenerateMessages {
                     &[("operation", "identity_update_lookup")],
                 );
                 push_metrics("xdbg_debug", "http://localhost:9091");
-            }
-
-            if let Some(secs) =
-                std::env::var("XDBG_LOOP_PAUSE").ok().and_then(|s| s.parse::<u64>().ok())
-            {
-                println!("Pausing for {}s after completing all message operations", secs);
-                std::thread::sleep(std::time::Duration::from_secs(secs));
             }
 
             Ok(())

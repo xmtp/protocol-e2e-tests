@@ -125,6 +125,11 @@ impl GenerateGroups {
             .map(|v| v.eq_ignore_ascii_case("TRUE"))
             .unwrap_or(false);
 
+        // Read loop pause once and capture into each task
+        let loop_pause_secs = std::env::var("XDBG_LOOP_PAUSE")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok());
+
         for _ in 0..n {
             let identity = self
                 .identity_store
@@ -151,6 +156,7 @@ impl GenerateGroups {
             let bar_pointer = bar.clone();
             let network = network.clone();
             let semaphore = semaphore.clone();
+            let loop_pause_secs = loop_pause_secs;
             handles.push(set.spawn(async move {
                 let _permit = semaphore.acquire().await?;
                 let identity_lock = get_identity_lock(&identity.inbox_id)?;
@@ -332,6 +338,11 @@ impl GenerateGroups {
                     .collect::<Vec<InboxId>>();
                 members.push(identity.inbox_id);
 
+                if let Some(secs) = loop_pause_secs {
+                    println!("Pausing for {}s after group iteration", secs);
+                    sleep(Duration::from_secs(secs)).await;
+                }
+
                 Ok(Group {
                     id: group
                         .group_id
@@ -369,13 +380,6 @@ impl GenerateGroups {
         self.group_store.set_all(groups.as_slice(), &self.network)?;
         if dump_groups {
             let _ = self.dump_groups_human();
-        }
-
-        if let Some(secs) =
-            std::env::var("XDBG_LOOP_PAUSE").ok().and_then(|s| s.parse::<u64>().ok())
-        {
-            println!("Pausing for {}s after completing all group operations", secs);
-            std::thread::sleep(std::time::Duration::from_secs(secs));
         }
 
         Ok(groups)
