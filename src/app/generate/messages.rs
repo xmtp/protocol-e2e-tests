@@ -12,9 +12,9 @@ use rand::{Rng, SeedableRng, rngs::SmallRng, seq::SliceRandom};
 use std::sync::Arc;
 use xmtp_mls::groups::summary::SyncSummary;
 
-// added for metrics + timing + sleep toggles
+// added for metrics + timing
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration};
 use crate::metrics::{record_latency, record_throughput, push_metrics};
 
 mod content_type;
@@ -56,20 +56,13 @@ impl GenerateMessages {
             r#loop, interval, ..
         } = self.opts;
 
-        // honor skip sleep toggle (ported)
-        let skip_sleep = std::env::var("XDBG_SKIP_SLEEP")
-            .map(|v| v.eq_ignore_ascii_case("TRUE"))
-            .unwrap_or(false);
-
         self.send_many_messages(self.db.clone(), n, concurrency)
             .await?;
 
         if r#loop {
             loop {
                 info!(time = ?std::time::Instant::now(), amount = n, "sending messages");
-                if !skip_sleep {
-                    tokio::time::sleep(*interval).await;
-                }
+                tokio::time::sleep(*interval).await;
                 self.send_many_messages(self.db.clone(), n, concurrency)
                     .await?;
             }
@@ -145,11 +138,6 @@ impl GenerateMessages {
             ..
         } = opts;
 
-        // sleep toggle (ported)
-        let skip_sleep = std::env::var("XDBG_SKIP_SLEEP")
-            .map(|v| v.eq_ignore_ascii_case("TRUE"))
-            .unwrap_or(false);
-
         let rng = &mut SmallRng::from_entropy();
         let group = group_store
             .random(&network, rng)?
@@ -157,7 +145,7 @@ impl GenerateMessages {
         if let Some(inbox_id) = group.members.choose(rng) {
             let key = (u64::from(&network), *inbox_id);
 
-            // pick a separate reader if available (ported)
+            // pick a separate reader if available
             let reader_inbox_opt = group.members.iter().find(|m| **m != *inbox_id).cloned();
 
             // each identity can only be used by one worker thread
@@ -178,7 +166,7 @@ impl GenerateMessages {
             let words = lipsum::lipsum_words_with_rng(&mut *rng, words as usize);
             let message = content_type::new_message(words);
 
-            // send timing + metrics (ported)
+            // send timing + metrics
             let start = std::time::Instant::now();
             live_group.send_message(&message).await?;
             let elapsed = start.elapsed().as_secs_f64();
@@ -199,7 +187,7 @@ impl GenerateMessages {
             );
             push_metrics("xdbg_debug", "http://localhost:9091");
 
-            // reader-side visibility + identity update read-path tests (ported)
+            // reader-side visibility + identity update read-path tests
             if let Some(reader_inbox) = reader_inbox_opt {
                 let reader_identity = identity_store
                     .get((u64::from(&network), reader_inbox).into())?
@@ -272,8 +260,10 @@ impl GenerateMessages {
                 push_metrics("xdbg_debug", "http://localhost:9091");
             }
 
-            // optional cooldown between messages (ported)
-            if let Some(secs) = std::env::var("XDBG_COOLDOWN_SLEEP").ok().and_then(|s| s.parse::<u64>().ok()) {
+            if let Some(secs) =
+                std::env::var("XDBG_LOOP_PAUSE").ok().and_then(|s| s.parse::<u64>().ok())
+            {
+                println!("Pausing for {}s after completing all message operations", secs);
                 std::thread::sleep(std::time::Duration::from_secs(secs));
             }
 
@@ -285,7 +275,7 @@ impl GenerateMessages {
 }
 
 // ----------------------------
-// CSV helpers (ported)
+// CSV helpers
 // ----------------------------
 fn now_unix_ms() -> u128 {
     SystemTime::now()

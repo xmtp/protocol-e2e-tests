@@ -85,17 +85,10 @@ impl GenerateIdentity {
         let network = &self.network;
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
 
-        // Metrics/env toggles carried over
-        let version = version_label();
-        let skip_sleep = std::env::var("XDBG_SKIP_SLEEP")
-            .map(|v| v.eq_ignore_ascii_case("TRUE"))
-            .unwrap_or(false);
-
         for _ in 0..n {
             let bar_pointer = bar.clone();
             let network = network.clone();
             let semaphore = semaphore.clone();
-            let version = version.clone();
 
             set.spawn(async move {
                 let _permit = semaphore.acquire().await?;
@@ -105,19 +98,19 @@ impl GenerateIdentity {
                 let _tmp_client = app::temp_client(&network, None).await?;
                 let client_init_secs = client_init_start.elapsed().as_secs_f64();
 
-                record_latency(&format!("identity_client_init_{}", version), client_init_secs);
+                record_latency("identity_client_init", client_init_secs);
                 record_throughput("identity_client_init");
                 csv_metric(
                     "latency_seconds",
                     "identity_client_init",
                     client_init_secs,
-                    &[("phase", "client_init"), ("version", &version)],
+                    &[("phase", "client_init")],
                 );
                 csv_metric(
                     "throughput_events",
                     "identity_client_init",
                     1.0,
-                    &[("phase", "client_init"), ("version", &version)],
+                    &[("phase", "client_init")],
                 );
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
@@ -127,19 +120,19 @@ impl GenerateIdentity {
                 let user = app::new_registered_client(network.clone(), Some(&wallet)).await?;
                 let register_secs = register_start.elapsed().as_secs_f64();
 
-                record_latency(&format!("identity_register_{}", version), register_secs);
+                record_latency("identity_register", register_secs);
                 record_throughput("identity_register");
                 csv_metric(
                     "latency_seconds",
                     "identity_register",
                     register_secs,
-                    &[("phase", "register"), ("version", &version)],
+                    &[("phase", "register")],
                 );
                 csv_metric(
                     "throughput_events",
                     "identity_register",
                     1.0,
-                    &[("phase", "register"), ("version", &version)],
+                    &[("phase", "register")],
                 );
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
@@ -152,7 +145,7 @@ impl GenerateIdentity {
 
                 let assoc_start = Instant::now();
                 let timeout = Duration::from_secs(30);
-                let poll_every = Duration::from_millis(200);
+                let poll_every = Duration::from_millis(50);
                 let deadline = tokio::time::Instant::now() + timeout;
 
                 let mut assoc_ready = false;
@@ -168,13 +161,12 @@ impl GenerateIdentity {
                     if tokio::time::Instant::now() >= deadline {
                         break;
                     }
-                    if !skip_sleep {
-                        sleep(poll_every).await;
-                    }
+                    // always sleep between polls now that skip toggle is removed
+                    sleep(poll_every).await;
                 }
                 let assoc_secs = assoc_start.elapsed().as_secs_f64();
 
-                record_latency(&format!("identity_assoc_ready_{}", version), assoc_secs);
+                record_latency("identity_assoc_ready", assoc_secs);
                 record_throughput("identity_assoc_ready");
                 csv_metric(
                     "latency_seconds",
@@ -182,7 +174,6 @@ impl GenerateIdentity {
                     assoc_secs,
                     &[
                         ("phase", "assoc_ready"),
-                        ("version", &version),
                         ("success", if assoc_ready { "true" } else { "false" }),
                     ],
                 );
@@ -192,7 +183,6 @@ impl GenerateIdentity {
                     1.0,
                     &[
                         ("phase", "assoc_ready"),
-                        ("version", &version),
                         ("success", if assoc_ready { "true" } else { "false" }),
                     ],
                 );
@@ -208,7 +198,7 @@ impl GenerateIdentity {
                     "latency_seconds",
                     "identity_read_sync_latency",
                     read_sync_secs,
-                    &[("phase", "identity_read_sync"), ("version", &version)],
+                    &[("phase", "identity_read_sync")],
                 );
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
@@ -225,7 +215,7 @@ impl GenerateIdentity {
                     "latency_seconds",
                     "read_identity_lookup_latency",
                     read_secs,
-                    &[("phase", "identity_read"), ("version", &version)],
+                    &[("phase", "identity_read")],
                 );
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
@@ -303,8 +293,10 @@ impl GenerateIdentity {
             bail!("Error generation failed");
         }
 
-        // Optional cooldown to dampen churn between test phases
-        if let Some(secs) = std::env::var("XDBG_COOLDOWN_SLEEP").ok().and_then(|s| s.parse::<u64>().ok()) {
+        if let Some(secs) =
+            std::env::var("XDBG_LOOP_PAUSE").ok().and_then(|s| s.parse::<u64>().ok())
+        {
+            println!("Pausing for {}s after completing all identity operations", secs);
             std::thread::sleep(std::time::Duration::from_secs(secs));
         }
 
@@ -313,7 +305,7 @@ impl GenerateIdentity {
 }
 
 // ----------------------------
-// CSV helpers + version label
+// CSV helpers
 // ----------------------------
 fn now_unix_ms() -> u128 {
     SystemTime::now()
@@ -334,8 +326,4 @@ fn csv_metric(metric_kind: &str, metric_name: &str, value: f64, labels: &[(&str,
             .join(";")
     };
     println!("{},{},{:.6},{},{}", metric_kind, metric_name, value, ts, labels_str);
-}
-
-fn version_label() -> String {
-    std::env::var("XDBG_VERSION").unwrap_or_else(|_| "na".to_string())
 }
