@@ -58,6 +58,11 @@ impl App {
 
     /// All data stored here
     fn data_directory() -> Result<PathBuf> {
+        if let Ok(root) = std::env::var("XDBG_DB_ROOT") {
+            let path = PathBuf::from(&root);
+            info!(path = %path.display(), "Using overridden XDBG_DB_ROOT");
+            return Ok(path);
+        }
         let data = if let Some(dir) = ProjectDirs::from("org", "xmtp", "xdbg") {
             Ok::<_, eyre::Report>(dir.data_dir().to_path_buf())
         } else {
