@@ -227,9 +227,11 @@ impl GenerateGroups {
                         ("member_count", &ids.len().to_string()),
                     ],
                 );
+                push_metrics("xdbg_debug", "http://localhost:9091");
 
                 let per_member = add_secs / (ids.len() as f64);
                 record_latency("group_add_members_per_member", per_member);
+                record_throughput("group_add_members_per_member");
                 csv_metric(
                     "latency_seconds",
                     "group_add_members_per_member",
@@ -239,6 +241,16 @@ impl GenerateGroups {
                         ("member_count", &ids.len().to_string()),
                     ],
                 );
+                csv_metric(
+                    "throughput_events",
+                    "group_add_members_per_member",
+                    1.0,
+                    &[
+                        ("phase", "add_members"),
+                        ("member_count", &ids.len().to_string()),
+                    ],
+                );
+                push_metrics("xdbg_debug", "http://localhost:9091");
 
                 // -------- total create -> add KPI --------
                 let total_secs = flow_start.elapsed().as_secs_f64();
@@ -262,7 +274,6 @@ impl GenerateGroups {
                         ("member_count", &ids.len().to_string()),
                     ],
                 );
-
                 csv_metric(
                     "event",
                     "group_add_members_ack",
@@ -281,6 +292,12 @@ impl GenerateGroups {
                     "latency_seconds",
                     "read_group_sync_latency",
                     read_sync_secs,
+                    &[("phase", "post_add_members_sync")],
+                );
+                csv_metric(
+                    "throughput_events",
+                    "read_group_sync_latency",
+                    1.0,
                     &[("phase", "post_add_members_sync")],
                 );
                 push_metrics("xdbg_debug", "http://localhost:9091");
@@ -316,6 +333,15 @@ impl GenerateGroups {
                     "latency_seconds",
                     "read_member_visibility",
                     vis_loop_secs,
+                    &[
+                        ("phase", "post_add_members_visibility"),
+                        ("success", if visible { "true" } else { "false" }),
+                    ],
+                );
+                csv_metric(
+                    "throughput_events",
+                    "read_member_visibility",
+                    1.0,
                     &[
                         ("phase", "post_add_members_visibility"),
                         ("success", if visible { "true" } else { "false" }),

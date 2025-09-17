@@ -206,6 +206,12 @@ impl GenerateIdentity {
                     read_sync_secs,
                     &[("phase", "identity_read_sync")],
                 );
+                csv_metric(
+                    "throughput_events",
+                    "identity_read_sync_latency",
+                    1.0,
+                    &[("phase", "identity_read_sync")],
+                );
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
                 // identity lookup read latency
@@ -221,6 +227,12 @@ impl GenerateIdentity {
                     "latency_seconds",
                     "read_identity_lookup_latency",
                     read_secs,
+                    &[("phase", "identity_read")],
+                );
+                csv_metric(
+                    "throughput_events",
+                    "read_identity_lookup_latency",
+                    1.0,
                     &[("phase", "identity_read")],
                 );
                 push_metrics("xdbg_debug", "http://localhost:9091");
@@ -273,10 +285,31 @@ impl GenerateIdentity {
         let future = |inbox_id: [u8; 32]| async move {
             let id = hex::encode(inbox_id);
             trace!(inbox_id = id, "getting association state");
+
+            // Added: read-path verification metrics (Prom + CSV + push)
+            let verify_start = Instant::now();
             let state = tmp
                 .identity_updates()
                 .get_latest_association_state(&conn, &id)
                 .await?;
+            let verify_secs = verify_start.elapsed().as_secs_f64();
+
+            record_latency("verify_identity_lookup_latency", verify_secs);
+            record_throughput("verify_identity_lookup_latency");
+            csv_metric(
+                "latency_seconds",
+                "verify_identity_lookup_latency",
+                verify_secs,
+                &[("phase", "verify_identity_read")],
+            );
+            csv_metric(
+                "throughput_events",
+                "verify_identity_lookup_latency",
+                1.0,
+                &[("phase", "verify_identity_read")],
+            );
+            push_metrics("xdbg_debug", "http://localhost:9091");
+
             bar_ref.inc(1);
             Ok(state)
         };

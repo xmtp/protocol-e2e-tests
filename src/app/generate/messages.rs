@@ -223,6 +223,12 @@ impl GenerateMessages {
                     read_sync_secs,
                     &[("operation", "post_send_sync")],
                 );
+                csv_metric(
+                    "throughput_events",
+                    "read_group_sync_after_send",
+                    1.0,
+                    &[("operation", "post_send_sync")],
+                );
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
                 // publish identity update (installations) on sender, measure
@@ -237,6 +243,12 @@ impl GenerateMessages {
                     pub_secs,
                     &[("operation", "identity_update_publish")],
                 );
+                csv_metric(
+                    "throughput_events",
+                    "identity_update_publish_latency",
+                    1.0,
+                    &[("operation", "identity_update_publish")],
+                );
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
                 // reader sync welcomes after publish
@@ -249,6 +261,12 @@ impl GenerateMessages {
                     "latency_seconds",
                     "read_identity_sync_after_publish",
                     sync_i_secs,
+                    &[("operation", "identity_update_sync")],
+                );
+                csv_metric(
+                    "throughput_events",
+                    "read_identity_sync_after_publish",
+                    1.0,
                     &[("operation", "identity_update_sync")],
                 );
                 push_metrics("xdbg_debug", "http://localhost:9091");
@@ -268,6 +286,12 @@ impl GenerateMessages {
                     "latency_seconds",
                     "read_identity_lookup_after_update_publish",
                     lookup_secs,
+                    &[("operation", "identity_update_lookup")],
+                );
+                csv_metric(
+                    "throughput_events",
+                    "read_identity_lookup_after_update_publish",
+                    1.0,
                     &[("operation", "identity_update_lookup")],
                 );
                 push_metrics("xdbg_debug", "http://localhost:9091");
