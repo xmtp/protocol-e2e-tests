@@ -168,6 +168,7 @@ impl GenerateGroups {
                     .iter()
                     .map(|i| hex::encode(i.inbox_id))
                     .collect::<Vec<_>>();
+                let member_count = ids.len();
 
                 // -------- group_create_client_only --------
                 let flow_start = Instant::now();
@@ -201,58 +202,153 @@ impl GenerateGroups {
                 );
                 push_metrics("xdbg_debug", "http://localhost:9091");
 
-                // -------- group_add_members --------
-                let add_start = Instant::now();
-                group.add_members_by_inbox_id(ids.as_slice()).await?;
-                let add_secs = add_start.elapsed().as_secs_f64();
+                // -------- group_add_members (only if we have invitees) --------
+                if member_count > 0 {
+                    let add_start = Instant::now();
+                    group.add_members_by_inbox_id(ids.as_slice()).await?;
+                    let add_secs = add_start.elapsed().as_secs_f64();
 
-                record_latency("group_add_members", add_secs);
-                record_member_count("group_add_members", ids.len() as f64);
-                record_throughput("group_add_members");
-                csv_metric(
-                    "latency_seconds",
-                    "group_add_members",
-                    add_secs,
-                    &[
-                        ("phase", "add_members"),
-                        ("member_count", &ids.len().to_string()),
-                    ],
-                );
-                csv_metric(
-                    "throughput_events",
-                    "group_add_members",
-                    1.0,
-                    &[
-                        ("phase", "add_members"),
-                        ("member_count", &ids.len().to_string()),
-                    ],
-                );
-                push_metrics("xdbg_debug", "http://localhost:9091");
+                    record_latency("group_add_members", add_secs);
+                    record_member_count("group_add_members", member_count as f64);
+                    record_throughput("group_add_members");
+                    csv_metric(
+                        "latency_seconds",
+                        "group_add_members",
+                        add_secs,
+                        &[
+                            ("phase", "add_members"),
+                            ("member_count", &member_count.to_string()),
+                        ],
+                    );
+                    csv_metric(
+                        "throughput_events",
+                        "group_add_members",
+                        1.0,
+                        &[
+                            ("phase", "add_members"),
+                            ("member_count", &member_count.to_string()),
+                        ],
+                    );
+                    push_metrics("xdbg_debug", "http://localhost:9091");
 
-                let per_member = add_secs / (ids.len() as f64);
-                record_latency("group_add_members_per_member", per_member);
-                record_throughput("group_add_members_per_member");
-                csv_metric(
-                    "latency_seconds",
-                    "group_add_members_per_member",
-                    per_member,
-                    &[
-                        ("phase", "add_members"),
-                        ("member_count", &ids.len().to_string()),
-                    ],
-                );
-                csv_metric(
-                    "throughput_events",
-                    "group_add_members_per_member",
-                    1.0,
-                    &[
-                        ("phase", "add_members"),
-                        ("member_count", &ids.len().to_string()),
-                    ],
-                );
-                push_metrics("xdbg_debug", "http://localhost:9091");
+                    let per_member = add_secs / (member_count as f64);
+                    record_latency("group_add_members_per_member", per_member);
+                    record_throughput("group_add_members_per_member");
+                    csv_metric(
+                        "latency_seconds",
+                        "group_add_members_per_member",
+                        per_member,
+                        &[
+                            ("phase", "add_members"),
+                            ("member_count", &member_count.to_string()),
+                        ],
+                    );
+                    csv_metric(
+                        "throughput_events",
+                        "group_add_members_per_member",
+                        1.0,
+                        &[
+                            ("phase", "add_members"),
+                            ("member_count", &member_count.to_string()),
+                        ],
+                    );
+                    push_metrics("xdbg_debug", "http://localhost:9091");
 
-                // -------- total create -> add KPI --------
+                    // ack for the first member only when present
+                    csv_metric(
+                        "event",
+                        "group_add_members_ack",
+                        1.0,
+                        &[("member_0", &ids[0]), ("group_id", &gid_hex)],
+                    );
+                    push_metrics("xdbg_debug", "http://localhost:9091");
+
+                    // -------- read_group_sync_latency --------
+                    let read_sync_start = Instant::now();
+                    let _ = group.sync_with_conn().await;
+                    let read_sync_secs = read_sync_start.elapsed().as_secs_f64();
+                    record_latency("read_group_sync_latency", read_sync_secs);
+                    record_throughput("read_group_sync_latency");
+                    csv_metric(
+                        "latency_seconds",
+                        "read_group_sync_latency",
+                        read_sync_secs,
+                        &[("phase", "post_add_members_sync")],
+                    );
+                    csv_metric(
+                        "throughput_events",
+                        "read_group_sync_latency",
+                        1.0,
+                        &[("phase", "post_add_members_sync")],
+                    );
+                    push_metrics("xdbg_debug", "http://localhost:9091");
+
+                    // -------- reader-side verification (first invitee) --------
+                    if let Some(invitee_identity) = invitees_vec.get(0) {
+                        let reader = app::client_from_identity(invitee_identity, &network).await?;
+                        let gid_for_reader = group.group_id.clone().into();
+
+                        let verify_timeout = Duration::from_secs(15);
+                        let poll_every = Duration::from_millis(10);
+                        let deadline = tokio::time::Instant::now() + verify_timeout;
+
+                        let vis_loop_start = Instant::now();
+                        let mut visible = false;
+                        while tokio::time::Instant::now() < deadline {
+                            let _ = reader.sync_welcomes().await;
+                            match reader.group(&gid_for_reader) {
+                                Ok(g2) => {
+                                    if g2.sync_with_conn().await.is_ok() {
+                                        visible = true;
+                                        break;
+                                    }
+                                }
+                                Err(_) => {}
+                            }
+                            sleep(poll_every).await;
+                        }
+                        let vis_loop_secs = vis_loop_start.elapsed().as_secs_f64();
+                        record_latency("read_member_visibility", vis_loop_secs);
+                        record_throughput("read_member_visibility");
+                        csv_metric(
+                            "latency_seconds",
+                            "read_member_visibility",
+                            vis_loop_secs,
+                            &[
+                                ("phase", "post_add_members_visibility"),
+                                ("success", if visible { "true" } else { "false" }),
+                            ],
+                        );
+                        csv_metric(
+                            "throughput_events",
+                            "read_member_visibility",
+                            1.0,
+                            &[
+                                ("phase", "post_add_members_visibility"),
+                                ("success", if visible { "true" } else { "false" }),
+                            ],
+                        );
+                        push_metrics("xdbg_debug", "http://localhost:9091");
+
+                        csv_metric(
+                            "event",
+                            "group_member_visible",
+                            if visible { 1.0 } else { 0.0 },
+                            &[("member_0", &ids[0]), ("group_id", &gid_hex)],
+                        );
+                    }
+                } else {
+                    // No invitees path: record a clear event and skip add/sync/verify
+                    csv_metric(
+                        "event",
+                        "group_created_no_invitees",
+                        1.0,
+                        &[("group_id", &gid_hex)],
+                    );
+                    push_metrics("xdbg_debug", "http://localhost:9091");
+                }
+
+                // -------- total create -> add KPI (works for both paths) --------
                 let total_secs = flow_start.elapsed().as_secs_f64();
                 record_latency("group_create_with_members", total_secs);
                 record_throughput("group_create_with_members");
@@ -262,7 +358,7 @@ impl GenerateGroups {
                     total_secs,
                     &[
                         ("phase", "create_with_members"),
-                        ("member_count", &ids.len().to_string()),
+                        ("member_count", &member_count.to_string()),
                     ],
                 );
                 csv_metric(
@@ -271,90 +367,10 @@ impl GenerateGroups {
                     1.0,
                     &[
                         ("phase", "create_with_members"),
-                        ("member_count", &ids.len().to_string()),
-                    ],
-                );
-                csv_metric(
-                    "event",
-                    "group_add_members_ack",
-                    1.0,
-                    &[("member_0", &ids[0]), ("group_id", &gid_hex)],
-                );
-                push_metrics("xdbg_debug", "http://localhost:9091");
-
-                // -------- read_group_sync_latency --------
-                let read_sync_start = Instant::now();
-                let _ = group.sync_with_conn().await;
-                let read_sync_secs = read_sync_start.elapsed().as_secs_f64();
-                record_latency("read_group_sync_latency", read_sync_secs);
-                record_throughput("read_group_sync_latency");
-                csv_metric(
-                    "latency_seconds",
-                    "read_group_sync_latency",
-                    read_sync_secs,
-                    &[("phase", "post_add_members_sync")],
-                );
-                csv_metric(
-                    "throughput_events",
-                    "read_group_sync_latency",
-                    1.0,
-                    &[("phase", "post_add_members_sync")],
-                );
-                push_metrics("xdbg_debug", "http://localhost:9091");
-
-                // -------- reader-side verification --------
-                let invitee_identity = &invitees_vec[0];
-                let reader = app::client_from_identity(invitee_identity, &network).await?;
-                let gid_for_reader = group.group_id.clone().into();
-
-                let verify_timeout = Duration::from_secs(15);
-                let poll_every = Duration::from_millis(10);
-                let deadline = tokio::time::Instant::now() + verify_timeout;
-
-                let vis_loop_start = Instant::now();
-                let mut visible = false;
-                while tokio::time::Instant::now() < deadline {
-                    let _ = reader.sync_welcomes().await;
-                    match reader.group(&gid_for_reader) {
-                        Ok(g2) => {
-                            if g2.sync_with_conn().await.is_ok() {
-                                visible = true;
-                                break;
-                            }
-                        }
-                        Err(_) => {}
-                    }
-                    sleep(poll_every).await;
-                }
-                let vis_loop_secs = vis_loop_start.elapsed().as_secs_f64();
-                record_latency("read_member_visibility", vis_loop_secs);
-                record_throughput("read_member_visibility");
-                csv_metric(
-                    "latency_seconds",
-                    "read_member_visibility",
-                    vis_loop_secs,
-                    &[
-                        ("phase", "post_add_members_visibility"),
-                        ("success", if visible { "true" } else { "false" }),
-                    ],
-                );
-                csv_metric(
-                    "throughput_events",
-                    "read_member_visibility",
-                    1.0,
-                    &[
-                        ("phase", "post_add_members_visibility"),
-                        ("success", if visible { "true" } else { "false" }),
+                        ("member_count", &member_count.to_string()),
                     ],
                 );
                 push_metrics("xdbg_debug", "http://localhost:9091");
-
-                csv_metric(
-                    "event",
-                    "group_member_visible",
-                    if visible { 1.0 } else { 0.0 },
-                    &[("member_0", &ids[0]), ("group_id", &gid_hex)],
-                );
 
                 bar_pointer.inc(1);
 
