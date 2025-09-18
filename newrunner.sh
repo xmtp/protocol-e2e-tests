@@ -6,9 +6,11 @@ set -euo pipefail
 
 MESSAGE_DB=xdbg-message-db
 GROUP_DB=xdbg-group-db
+IDENTITY_DB=xdbg-identity-db
 
 MSG_LOG=xdbg-scheduled-messages.out
 GRP_LOG=xdbg-scheduled-groups.out
+ID_LOG=xdbg-scheduled-identities.out
 
 function log {
     echo "[$(date '+%F %T')] $*"
@@ -36,8 +38,8 @@ function generate_identities() {
     local db_root=$1
     mkdir -p "$db_root"
     log "Generating identities at $db_root"
-    XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity identity --amount 10 --concurrency 1 \
-        || { log "Identity generation failed, clearing and retrying"; clear_db "$db_root"; XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity identity --amount 10 --concurrency 1; }
+    XDBG_LOOP_PAUSE=0 XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity identity --amount 10 --concurrency 1 \
+        || { log "Identity generation failed, clearing and retrying"; clear_db "$db_root"; XDBG_LOOP_PAUSE=5 XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity identity --amount 10 --concurrency 1; }
 }
 
 function generate_groups_with_retry() {
@@ -96,11 +98,31 @@ function run_long_test() {
     done
 }
 
-# Initial setup
+# Identity-only long runner: no setup on start or after failure
+function run_identity_long_test() {
+    local db_root=$1
+    local log_file=$2
+
+    mkdir -p "$db_root"
+    log "Starting long-running identity test with DB at $db_root (no setup required)"
+    while true; do
+        if ! XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity identity --amount 99999 --concurrency 1 &> "$log_file"; then
+            log "identity test failed. Clearing DB and retrying..."
+            clear_db "$db_root"
+            # repairs: override pause to 5s
+            XDBG_LOOP_PAUSE=5 XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity identity --amount 10 --concurrency 1 || true
+        else
+            log "identity test completed (restarting loop)"
+        fi
+    done
+}
+
+# Initial setup (none for identities)
 setup_data "$GROUP_DB" group
 setup_data "$MESSAGE_DB" message
 
 echo "Starting tests...."
 run_long_test "$GROUP_DB" group "$GRP_LOG" &
 run_long_test "$MESSAGE_DB" message "$MSG_LOG" &
+run_identity_long_test "$IDENTITY_DB" "$ID_LOG" &
 wait
