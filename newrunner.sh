@@ -86,7 +86,7 @@ function run_long_test() {
     mkdir -p "$db_root"
     log "Starting long-running $entity test with DB at $db_root"
     while true; do
-        if ! XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity "$entity" --amount 9999999 --concurrency 1 &> "$log_file"; then
+        if ! XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity "$entity" --amount 99999 --concurrency 1 &> "$log_file"; then
             log "$entity test failed. Resetting DB and retrying..."
             clear_db "$db_root"
             setup_data "$db_root" "$entity"
