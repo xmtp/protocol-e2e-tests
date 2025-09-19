@@ -186,14 +186,15 @@ impl GenerateMessages {
             (client, sender_inbox_bytes)
         }; // lock dropped here
 
-        // Helper: timeout wrapper for heavy ops
-        async fn with_timeout<F, T>(dur: Duration, fut: F) -> eyre::Result<Option<T>>
+        // Helper: timeout wrapper for heavy ops (generic over error type)
+        async fn with_timeout<F, T, E>(dur: Duration, fut: F) -> eyre::Result<Option<T>>
         where
-            F: std::future::Future<Output = eyre::Result<T>>,
+            F: std::future::Future<Output = Result<T, E>>,
+            E: std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
         {
             match timeout(dur, fut).await {
                 Ok(Ok(v)) => Ok(Some(v)),
-                Ok(Err(e)) => Err(e),
+                Ok(Err(e)) => Err(eyre::eyre!(e)),
                 Err(_) => Ok(None), // soft timeout
             }
         }
