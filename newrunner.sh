@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-: "${XDBG_LOOP_PAUSE:=300}" # set the default interval between requests to 5min
+: "${XDBG_LOOP_PAUSE:=300}" # default interval between restarts
 
 MESSAGE_DB=xdbg-message-db
 GROUP_DB=xdbg-group-db
@@ -38,6 +38,7 @@ function generate_identities() {
     local db_root=$1
     mkdir -p "$db_root"
     log "Generating identities at $db_root"
+    # Fast pass (no delay), then a conservative retry with 5s pause if needed
     XDBG_LOOP_PAUSE=0 XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity identity --amount 10 --concurrency 1 \
         || { log "Identity generation failed, clearing and retrying"; clear_db "$db_root"; XDBG_LOOP_PAUSE=5 XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity identity --amount 10 --concurrency 1; }
 }
@@ -80,49 +81,81 @@ function setup_data() {
     fi
 }
 
-function run_long_test() {
+# --- Singleton long-runners (exactly one per entity) ------------------------
+
+# Generic singleton runner (message/group)
+function run_long_test_singleton() {
     local db_root=$1
     local entity=$2
     local log_file=$3
 
     mkdir -p "$db_root"
-    log "Starting long-running $entity test with DB at $db_root"
+
+    # Lock ensures only one instance per entity on the host
+    local lockfile="/tmp/xdbg-${entity}.lock"
+    exec 9>"$lockfile"
+    if ! flock -n 9; then
+        log "Another ${entity} runner is already active (lock: $lockfile). Not starting a duplicate."
+        return 0
+    fi
+
+    # Clean up lock on exit
+    trap 'log "Stopping ${entity} runner"; rm -f "$lockfile" || true' EXIT
+
+    log "Starting singleton ${entity} runner with DB at $db_root (lock: $lockfile)"
+
     while true; do
-        if ! XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity "$entity" --amount 99999 --concurrency 1 &> "$log_file"; then
-            log "$entity test failed. Resetting DB and retrying..."
+        if ! XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity "$entity" --amount 99999 --concurrency 1 >>"$log_file" 2>&1; then
+            log "${entity} generator exited with error. Resetting DB and repairing prerequisites..."
             clear_db "$db_root"
             setup_data "$db_root" "$entity"
         else
-            log "$entity test completed (restarting loop)"
+            log "${entity} generator exited normally (unexpected for long-run)."
         fi
+        log "Restarting ${entity} generator in ${XDBG_LOOP_PAUSE}s..."
+        sleep "${XDBG_LOOP_PAUSE}"
     done
 }
 
-# Identity-only long runner: no setup on start or after failure
-function run_identity_long_test() {
+# Identity-only singleton with special fast-repair path
+function run_identity_long_test_singleton() {
     local db_root=$1
     local log_file=$2
 
     mkdir -p "$db_root"
-    log "Starting long-running identity test with DB at $db_root (no setup required)"
+
+    local lockfile="/tmp/xdbg-identity.lock"
+    exec 10>"$lockfile"
+    if ! flock -n 10; then
+        log "Another identity runner is already active (lock: $lockfile). Not starting a duplicate."
+        return 0
+    fi
+
+    trap 'log "Stopping identity runner"; rm -f "$lockfile" || true' EXIT
+
+    log "Starting singleton identity runner with DB at $db_root (lock: $lockfile)"
+
     while true; do
-        if ! XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity identity --amount 99999 --concurrency 1 &> "$log_file"; then
-            log "identity test failed. Clearing DB and retrying..."
+        if ! XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity identity --amount 99999 --concurrency 1 >>"$log_file" 2>&1; then
+            log "Identity generator failed. Clearing DB and performing quick repairs..."
             clear_db "$db_root"
-            # repairs: override pause to 5s
+            # repairs: override pause to 5s for quick identity seeding
             XDBG_LOOP_PAUSE=5 XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity identity --amount 10 --concurrency 1 || true
         else
-            log "identity test completed (restarting loop)"
+            log "Identity generator exited normally (unexpected for long-run)."
         fi
+        log "Restarting identity generator in ${XDBG_LOOP_PAUSE}s..."
+        sleep "${XDBG_LOOP_PAUSE}"
     done
 }
 
-# Initial setup (none for identities)
+# --- Bootstrap required data for message/group, none for identity -----------
+
 setup_data "$GROUP_DB" group
 setup_data "$MESSAGE_DB" message
 
 echo "Starting tests...."
-run_long_test "$GROUP_DB" group "$GRP_LOG" &
-run_long_test "$MESSAGE_DB" message "$MSG_LOG" &
-run_identity_long_test "$IDENTITY_DB" "$ID_LOG" &
+run_long_test_singleton "$GROUP_DB" group "$GRP_LOG" &
+run_long_test_singleton "$MESSAGE_DB" message "$MSG_LOG" &
+run_identity_long_test_singleton "$IDENTITY_DB" "$ID_LOG" &
 wait
