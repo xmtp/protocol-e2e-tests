@@ -1,7 +1,5 @@
 #!/bin/bash
 
-set -euo pipefail
-
 : "${XDBG_LOOP_PAUSE:=300}" # default interval between restarts
 
 function log {
