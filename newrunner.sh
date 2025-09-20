@@ -105,13 +105,19 @@ function run_long_test_singleton() {
     log "Starting singleton ${entity} runner with DB at $db_root (lock: $lockfile)"
 
     while true; do
-        if ! XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity "$entity" --amount 99999 --concurrency 1 >>"$log_file" 2>&1; then
-            log "${entity} generator exited with error. Resetting DB and repairing prerequisites..."
-            clear_db "$db_root"
-            setup_data "$db_root" "$entity"
-        else
-            log "${entity} generator exited normally (unexpected for long-run)."
-        fi
+        # Inner loop: call xdbg with --amount 1 repeatedly, exit on first failure
+        while true; do
+            if ! XDBG_LOOP_PAUSE=0 XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity "$entity" --amount 1 --concurrency 1 >>"$log_file" 2>&1; then
+                log "${entity} xdbg failed; breaking loop to trigger repairs."
+                break
+            fi
+            sleep "${XDBG_LOOP_PAUSE}"
+        done
+
+        log "${entity} generator encountered a failure. Resetting DB and repairing prerequisites..."
+        clear_db "$db_root"
+        setup_data "$db_root" "$entity"
+
         log "Restarting ${entity} generator in ${XDBG_LOOP_PAUSE}s..."
         sleep "${XDBG_LOOP_PAUSE}"
     done
@@ -136,14 +142,20 @@ function run_identity_long_test_singleton() {
     log "Starting singleton identity runner with DB at $db_root (lock: $lockfile)"
 
     while true; do
-        if ! XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity identity --amount 99999 --concurrency 1 >>"$log_file" 2>&1; then
-            log "Identity generator failed. Clearing DB and performing quick repairs..."
-            clear_db "$db_root"
-            # repairs: override pause to 5s for quick identity seeding
-            XDBG_LOOP_PAUSE=5 XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity identity --amount 10 --concurrency 1 || true
-        else
-            log "Identity generator exited normally (unexpected for long-run)."
-        fi
+        # Inner loop: one-shot identity generation; exit loop on first failure
+        while true; do
+            if ! XDBG_LOOP_PAUSE=0 XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity identity --amount 1 --concurrency 1 >>"$log_file" 2>&1; then
+                log "${entity} xdbg failed; breaking inner loop to trigger repairs."
+                break
+            fi
+            sleep "${XDBG_LOOP_PAUSE}"
+        done
+
+        log "Identity generator failed. Clearing DB and performing quick repairs..."
+        clear_db "$db_root"
+        # repairs: override pause to 5s for quick identity seeding only for this repair step
+        XDBG_LOOP_PAUSE=5 XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity identity --amount 10 --concurrency 1 || true
+
         log "Restarting identity generator in ${XDBG_LOOP_PAUSE}s..."
         sleep "${XDBG_LOOP_PAUSE}"
     done
