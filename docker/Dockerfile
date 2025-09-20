@@ -25,6 +25,4 @@ COPY --from=builder /src/target/release/xdbg /usr/local/bin/xdbg
 COPY xmtp_debug/newrunner.sh /usr/local/bin/newrunner.sh
 RUN chmod +x /usr/local/bin/xdbg /usr/local/bin/newrunner.sh
 
-ENV RUST_LOG=info
-
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/newrunner.sh"]
