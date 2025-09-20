@@ -107,7 +107,8 @@ function run_long_test_singleton() {
     while true; do
         # Inner loop: call xdbg with --amount 1 repeatedly, exit on first failure
         while true; do
-            if ! XDBG_LOOP_PAUSE=0 XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity "$entity" --amount 1 --concurrency 1 >>"$log_file" 2>&1; then
+            ## MUST pass --invite now so the operation hits the network. Message send just ignores --invite so no problem
+            if ! XDBG_LOOP_PAUSE=0 XDBG_DB_ROOT="$db_root" xdbg -d -b "${BACKEND}" generate --entity "$entity" --amount 1 --concurrency 1 --invite 1 >>"$log_file" 2>&1; then
                 log "${entity} xdbg failed; breaking loop to trigger repairs."
                 break
             fi
