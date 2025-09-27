@@ -10,7 +10,7 @@ function log {
 WORKSPACE="${WORKSPACE:-}"
 case "${WORKSPACE}" in
     testnet) BACKEND="production" ;;
-    testnet-dev) BACKEND="dev" ;;
+    testnet-dev) BACKEND="staging" ;;
     testnet-staging) BACKEND="staging" ;;
     ""|*) BACKEND="local" ;;
 esac
