@@ -34,7 +34,7 @@ impl Export {
             network,
             store,
         } = self;
-        let args::ExportOpts { entity, out } = opts;
+        let args::ExportOpts { entity, out, .. } = opts;
         let mut writer: Box<dyn Write> = if let Some(p) = out {
             Box::new(fs::File::create(p)?)
         } else {

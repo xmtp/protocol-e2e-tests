@@ -9,7 +9,6 @@ use color_eyre::eyre::Result;
 
 use std::sync::Arc;
 use xmtp_api_grpc::error::GrpcError;
-use xmtp_api_grpc::grpc_api_helper::Client as GrpcClient;
 use xmtp_mls::context::XmtpMlsLocalContext;
 use xmtp_proto::prelude::ApiClientError;
 

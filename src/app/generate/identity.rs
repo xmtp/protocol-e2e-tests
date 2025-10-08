@@ -344,10 +344,11 @@ impl GenerateIdentity {
 
     /// Export identities to JSON, optionally including private keys
     pub fn export_identities(&self, include_private_keys: bool) -> Result<String> {
-        let identities = self.identity_store.load(&self.network)?
-            .map(|i| i.map(|i| i.value()))
-            .transpose()?
-            .unwrap_or_default();
+        let identities_iter = self.identity_store.load(&self.network)?;
+        let identities: Vec<_> = match identities_iter {
+            Some(iter) => iter.map(|i| i.value()).collect(),
+            None => Vec::new(),
+        };
 
         let exported: Vec<_> = identities
             .into_iter()
@@ -356,7 +357,7 @@ impl GenerateIdentity {
                     serde_json::json!({
                         "inbox_id": hex::encode(identity.inbox_id),
                         "public_key": hex::encode(identity.public_key),
-                        "private_key": hex::encode(identity.private_key), // Include private key
+                        "private_key": hex::encode(identity.private_key),
                     })
                 } else {
                     serde_json::json!({

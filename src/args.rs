@@ -292,11 +292,13 @@ impl BackendOpts {
             let mut payer = GrpcClient::builder();
             payer.set_host(payer_host.to_string());
             payer.set_tls(is_secure);
-            let payer = payer.build().await?;
+            let payer = payer.build()?; // <-- removed .await
+
             let mut message = GrpcClient::builder();
             message.set_host(network.to_string());
             message.set_tls(is_secure);
-            let message = message.build().await?;
+            let message = message.build()?; // <-- removed .await
+
             Ok(Arc::new(D14nClient::new(message, payer)))
         } else {
             trace!(url = %network, is_secure, "create grpc");
