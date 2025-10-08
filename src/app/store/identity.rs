@@ -1,7 +1,6 @@
 use crate::{app::types::*, constants::STORAGE_PREFIX};
 use color_eyre::eyre::Result;
 use redb::TableDefinition;
-use serde::{Serialize, Deserialize};
 use std::sync::Arc;
 
 use super::{Database, MetadataStore};

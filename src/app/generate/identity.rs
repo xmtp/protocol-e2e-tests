@@ -10,7 +10,6 @@ use indicatif::{ProgressBar, ProgressStyle};
 use tokio::time::{sleep, Duration};
 
 use crate::metrics::{record_latency, record_throughput, push_metrics};
-use serde_json; // Add this import
 
 /// Identity Generation
 pub struct GenerateIdentity {
@@ -29,7 +28,7 @@ impl GenerateIdentity {
     #[allow(unused)]
     pub fn load_identities(
         &self,
-    ) -> Result<Option<impl Iterator<Item = Result<Identity>> + '_>> {
+    ) -> Result<Option<impl Iterator<Item = Result<Identity>> + use<'_>>> {
         Ok(self
             .identity_store
             .load(&self.network)?
@@ -340,35 +339,6 @@ impl GenerateIdentity {
         }
 
         Ok(identities)
-    }
-
-    /// Export identities to JSON, optionally including private keys
-    pub fn export_identities(&self, include_private_keys: bool) -> Result<String> {
-        let identities_iter = self.identity_store.load(&self.network)?;
-        let identities: Vec<_> = match identities_iter {
-            Some(iter) => iter.map(|i| i.value()).collect(),
-            None => Vec::new(),
-        };
-
-        let exported: Vec<_> = identities
-            .into_iter()
-            .map(|identity| {
-                if include_private_keys {
-                    serde_json::json!({
-                        "inbox_id": hex::encode(identity.inbox_id),
-                        "public_key": hex::encode(identity.public_key),
-                        "private_key": hex::encode(identity.private_key),
-                    })
-                } else {
-                    serde_json::json!({
-                        "inbox_id": hex::encode(identity.inbox_id),
-                        "public_key": hex::encode(identity.public_key),
-                    })
-                }
-            })
-            .collect();
-
-        Ok(serde_json::to_string_pretty(&exported)?)
     }
 }
 

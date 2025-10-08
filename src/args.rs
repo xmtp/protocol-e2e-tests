@@ -5,7 +5,7 @@ use std::sync::Arc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use color_eyre::eyre;
-use xmtp_api_grpc::GrpcClient;
+use xmtp_api_grpc::grpc_client::GrpcClient;
 use xxhash_rust::xxh3;
 mod types;
 pub use types::*;
@@ -178,9 +178,6 @@ pub struct ExportOpts {
     /// File to write to
     #[arg(long, short)]
     pub out: Option<PathBuf>,
-    /// Include private keys in the export
-    #[arg(long)]
-    pub include_private_keys: bool, // Added flag to include private keys
 }
 
 #[derive(ValueEnum, Debug, Clone)]
@@ -292,13 +289,11 @@ impl BackendOpts {
             let mut payer = GrpcClient::builder();
             payer.set_host(payer_host.to_string());
             payer.set_tls(is_secure);
-            let payer = payer.build()?; // <-- removed .await
-
+            let payer = payer.build().await?;
             let mut message = GrpcClient::builder();
             message.set_host(network.to_string());
             message.set_tls(is_secure);
-            let message = message.build()?; // <-- removed .await
-
+            let message = message.build().await?;
             Ok(Arc::new(D14nClient::new(message, payer)))
         } else {
             trace!(url = %network, is_secure, "create grpc");

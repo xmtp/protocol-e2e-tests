@@ -6,7 +6,6 @@ use color_eyre::eyre::{self, Result};
 use ecdsa::SigningKey;
 use openmls::{credentials::BasicCredential, prelude::Credential};
 use prost::Message;
-use serde::{Serialize, Deserialize};
 use speedy::{Readable, Writable};
 
 use xmtp_cryptography::XmtpInstallationCredential;
@@ -50,7 +49,7 @@ impl<'a> From<&'a Identity> for EthereumWallet {
 
 /// Identity specific to this debug CLI Tool.
 /// An installation key and a eth address
-#[derive(valuable::Valuable, Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Readable, Writable, Serialize, Deserialize)]
+#[derive(valuable::Valuable, Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Readable, Writable)]
 pub struct Identity {
     pub inbox_id: [u8; 32],
     installation_key: [u8; 32],
