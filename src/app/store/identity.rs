@@ -1,6 +1,7 @@
 use crate::{app::types::*, constants::STORAGE_PREFIX};
 use color_eyre::eyre::Result;
 use redb::TableDefinition;
+use serde::{Serialize, Deserialize};
 use std::sync::Arc;
 
 use super::{Database, MetadataStore};
@@ -76,18 +77,5 @@ impl super::TrackMetadata for IdentityStorage {
             meta.identities -= n;
         })?;
         Ok(())
-    }
-}
-
-impl serde::Serialize for Identity {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let mut state = serializer.serialize_struct("Identity", 3)?;
-        state.serialize_field("inbox_id", &hex::encode(self.inbox_id))?;
-        state.serialize_field("public_key", &hex::encode(self.public_key))?;
-        state.serialize_field("private_key", &hex::encode(self.private_key))?; // Ensure private key is serialized
-        state.end()
     }
 }

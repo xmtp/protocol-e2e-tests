@@ -10,6 +10,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use tokio::time::{sleep, Duration};
 
 use crate::metrics::{record_latency, record_throughput, push_metrics};
+use serde_json; // Add this import
 
 /// Identity Generation
 pub struct GenerateIdentity {
