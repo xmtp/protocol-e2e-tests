@@ -78,3 +78,16 @@ impl super::TrackMetadata for IdentityStorage {
         Ok(())
     }
 }
+
+impl serde::Serialize for Identity {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("Identity", 3)?;
+        state.serialize_field("inbox_id", &hex::encode(self.inbox_id))?;
+        state.serialize_field("public_key", &hex::encode(self.public_key))?;
+        state.serialize_field("private_key", &hex::encode(self.private_key))?; // Ensure private key is serialized
+        state.end()
+    }
+}

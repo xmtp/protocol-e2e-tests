@@ -178,6 +178,9 @@ pub struct ExportOpts {
     /// File to write to
     #[arg(long, short)]
     pub out: Option<PathBuf>,
+    /// Include private keys in the export
+    #[arg(long)]
+    pub include_private_keys: bool, // Added flag to include private keys
 }
 
 #[derive(ValueEnum, Debug, Clone)]

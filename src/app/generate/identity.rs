@@ -28,7 +28,7 @@ impl GenerateIdentity {
     #[allow(unused)]
     pub fn load_identities(
         &self,
-    ) -> Result<Option<impl Iterator<Item = Result<Identity>> + use<'_>>> {
+    ) -> Result<Option<impl Iterator<Item = Result<Identity>> + '_>> {
         Ok(self
             .identity_store
             .load(&self.network)?
@@ -339,6 +339,34 @@ impl GenerateIdentity {
         }
 
         Ok(identities)
+    }
+
+    /// Export identities to JSON, optionally including private keys
+    pub fn export_identities(&self, include_private_keys: bool) -> Result<String> {
+        let identities = self.identity_store.load(&self.network)?
+            .map(|i| i.map(|i| i.value()))
+            .transpose()?
+            .unwrap_or_default();
+
+        let exported: Vec<_> = identities
+            .into_iter()
+            .map(|identity| {
+                if include_private_keys {
+                    serde_json::json!({
+                        "inbox_id": hex::encode(identity.inbox_id),
+                        "public_key": hex::encode(identity.public_key),
+                        "private_key": hex::encode(identity.private_key), // Include private key
+                    })
+                } else {
+                    serde_json::json!({
+                        "inbox_id": hex::encode(identity.inbox_id),
+                        "public_key": hex::encode(identity.public_key),
+                    })
+                }
+            })
+            .collect();
+
+        Ok(serde_json::to_string_pretty(&exported)?)
     }
 }
 
