@@ -18,11 +18,12 @@ FROM debian:trixie-slim
 WORKDIR /work
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tini bash ca-certificates procps libssl3 \
+ && apt-get install -y --no-install-recommends tini bash ca-certificates procps libssl3 curl \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /src/target/release/xdbg /usr/local/bin/xdbg
 COPY xmtp_debug/newrunner.sh /usr/local/bin/newrunner.sh
-RUN chmod +x /usr/local/bin/xdbg /usr/local/bin/newrunner.sh
+COPY xmtp_debug/web_healthcheck.sh /usr/local/bin/web_healthcheck.sh
+RUN chmod +x /usr/local/bin/xdbg /usr/local/bin/newrunner.sh /usr/local/bin/web_healthcheck.sh
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/newrunner.sh"]
