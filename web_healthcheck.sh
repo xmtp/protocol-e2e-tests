@@ -58,6 +58,20 @@ EOF
     
     if curl -s -X POST -H "Content-Type: text/plain" --data-binary "$metrics_payload" "$push_url" > /dev/null 2>&1; then
         log "Metrics pushed for $endpoint_id"
+        
+        # VERIFY: Read back the metric we just pushed
+        log "VERIFY: Reading back metrics from Pushgateway..."
+        verification=$(curl -s "${PUSHGATEWAY_URL}/metrics" | grep "web_endpoint_health.*${endpoint_id}")
+        if [ -n "$verification" ]; then
+            log "VERIFY SUCCESS: Metric found in Pushgateway:"
+            log "$verification"
+        else
+            log "VERIFY FAILED: Metric NOT found in Pushgateway!"
+            log "VERIFY: Checking all web_endpoint_health metrics:"
+            curl -s "${PUSHGATEWAY_URL}/metrics" | grep "web_endpoint_health" | while read -r line; do
+                log "  $line"
+            done
+        fi
     else
         log "WARNING: Failed to push metrics for $endpoint_id"
     fi
