@@ -45,12 +45,11 @@ for endpoint in "${ENDPOINTS[@]}"; do
     fi
     
     metric_name="web_endpoint_health"
-    timestamp=$(date +%s)000
     
-    # Construct payload with explicit newlines
+    # Construct payload with explicit newlines (NO timestamp - Pushgateway adds its own)
     metrics_payload="# HELP ${metric_name} Health status of web endpoints (1 = healthy, 0 = unhealthy)
 # TYPE ${metric_name} gauge
-${metric_name}{endpoint=\"${endpoint}\",endpoint_id=\"${endpoint_id}\",http_code=\"${http_code}\"} ${health_status} ${timestamp}
+${metric_name}{endpoint=\"${endpoint}\",endpoint_id=\"${endpoint_id}\",http_code=\"${http_code}\"} ${health_status}
 "
     
     push_url="${PUSHGATEWAY_URL}/metrics/job/web_healthcheck/instance/${endpoint_id}"
