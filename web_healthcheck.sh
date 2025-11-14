@@ -45,15 +45,13 @@ for endpoint in "${ENDPOINTS[@]}"; do
     fi
     
     metric_name="web_endpoint_health"
-    timestamp=$(date +%s)
+    timestamp=$(date +%s)000
     
-    metrics_payload=$(cat <<EOF
-# HELP ${metric_name} Health status of web endpoints (1 = healthy, 0 = unhealthy)
+    # Construct payload with explicit newlines
+    metrics_payload="# HELP ${metric_name} Health status of web endpoints (1 = healthy, 0 = unhealthy)
 # TYPE ${metric_name} gauge
-${metric_name}{endpoint="${endpoint}",endpoint_id="${endpoint_id}",http_code="${http_code}"} ${health_status} ${timestamp}000
-
-EOF
-)
+${metric_name}{endpoint=\"${endpoint}\",endpoint_id=\"${endpoint_id}\",http_code=\"${http_code}\"} ${health_status} ${timestamp}
+"
     
     push_url="${PUSHGATEWAY_URL}/metrics/job/web_healthcheck/instance/${endpoint_id}"
     
